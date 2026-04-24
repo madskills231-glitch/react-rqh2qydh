@@ -70,6 +70,84 @@ function TabsContent({ value, children }) {
 }
 
 // ================================================================
+// LOGIN SCREEN
+// ================================================================
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setError(error.message);
+      setLoading(false);
+    } else {
+      onLogin(data.session);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <div className="w-14 h-14 bg-amber-400 rounded-xl flex items-center justify-center mx-auto mb-4">
+            <span className="text-black font-black text-2xl">N</span>
+          </div>
+          <h1 className="text-2xl font-bold text-white">Northshore OS</h1>
+          <p className="text-slate-500 text-sm mt-1">Internal access only</p>
+        </div>
+
+        <Card>
+          <CardContent className="p-6">
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Email</label>
+                <Inp
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Password</label>
+                <Inp
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              {error && (
+                <p className="text-rose-400 text-xs bg-rose-900/20 border border-rose-800 rounded-lg px-3 py-2">{error}</p>
+              )}
+              <Btn
+                type="submit"
+                disabled={loading}
+                className="w-full bg-amber-400 text-black hover:bg-amber-500 font-semibold"
+              >
+                {loading ? "Signing in..." : "Sign In"}
+              </Btn>
+            </form>
+          </CardContent>
+        </Card>
+
+        <p className="text-center text-xs text-slate-700">
+          © {new Date().getFullYear()} Northshore Mechanical & Construction LLC
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
 // DASHBOARD
 // ================================================================
 function Dashboard({ jobs, estimates }) {
@@ -843,8 +921,24 @@ export default function App() {
   const [jobs, setJobs] = useState([]);
   const [estimates, setEstimates] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
+  // Auth check on mount
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthChecked(true);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Data load — only runs when session exists
+  useEffect(() => {
+    if (!session) return;
     async function loadData() {
       const [{ data: jobsData }, { data: estimatesData }] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
@@ -855,11 +949,33 @@ export default function App() {
       setLoading(false);
     }
     loadData();
-  }, []);
+  }, [session]);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setJobs([]);
+    setEstimates([]);
+  };
 
   const handleEstimateSaved = (est) => setEstimates(prev => [est, ...prev]);
   const handleJobCreated = (job) => setJobs(prev => [job, ...prev]);
 
+  // Auth loading
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="w-12 h-12 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Not logged in
+  if (!session) {
+    return <LoginScreen onLogin={setSession} />;
+  }
+
+  // Data loading
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -879,17 +995,22 @@ export default function App() {
             <span className="text-black font-black text-sm">N</span>
           </div>
           <div>
-            <h1 className="text-base font-bold leading-none">Northshore OS</h1>
+            <h1 className="text-base font-bold leading-none">Northshore OS <span className="text-amber-400 text-xs font-normal">v2</span></h1>
             <p className="text-xs text-slate-600 leading-none mt-0.5">Mechanical & Construction</p>
           </div>
         </div>
-        <nav className="flex flex-wrap gap-1.5">
+        <nav className="flex flex-wrap gap-1.5 items-center">
           {TABS.map(t => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${tab===t ? "bg-amber-400 text-black shadow-md shadow-amber-900/30" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}>
               {t}
             </button>
           ))}
+          <button
+            onClick={handleLogout}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium text-slate-500 hover:text-rose-400 hover:bg-rose-900/20 transition-all ml-2 border border-slate-800">
+            Sign Out
+          </button>
         </nav>
       </header>
 
