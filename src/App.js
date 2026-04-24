@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, createContext, useContext } from "react";
+import React, { useState, useEffect, createContext, useContext } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, BarChart, Bar } from "recharts";
 import { supabase } from "./supabase";
 
@@ -37,6 +37,13 @@ function CardContent({ className = "", children }) {
 function Inp({ className = "", ...props }) {
   return (
     <input className={`px-3 py-2 rounded-lg border border-slate-700 bg-slate-900 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50 w-full text-sm ${className}`} {...props} />
+  );
+}
+function Select({ className = "", children, ...props }) {
+  return (
+    <select className={`px-3 py-2 rounded-lg border border-slate-700 bg-slate-900 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50 w-full text-sm ${className}`} {...props}>
+      {children}
+    </select>
   );
 }
 function Badge({ label, color }) {
@@ -101,47 +108,25 @@ function LoginScreen({ onLogin }) {
           <h1 className="text-2xl font-bold text-white">Northshore OS</h1>
           <p className="text-slate-500 text-sm mt-1">Internal access only</p>
         </div>
-
         <Card>
           <CardContent className="p-6">
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Email</label>
-                <Inp
-                  type="email"
-                  placeholder="you@example.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  required
-                />
+                <Inp type="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} required />
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Password</label>
-                <Inp
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  required
-                />
+                <Inp type="password" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} required />
               </div>
-              {error && (
-                <p className="text-rose-400 text-xs bg-rose-900/20 border border-rose-800 rounded-lg px-3 py-2">{error}</p>
-              )}
-              <Btn
-                type="submit"
-                disabled={loading}
-                className="w-full bg-amber-400 text-black hover:bg-amber-500 font-semibold"
-              >
+              {error && <p className="text-rose-400 text-xs bg-rose-900/20 border border-rose-800 rounded-lg px-3 py-2">{error}</p>}
+              <Btn type="submit" disabled={loading} className="w-full bg-amber-400 text-black hover:bg-amber-500 font-semibold">
                 {loading ? "Signing in..." : "Sign In"}
               </Btn>
             </form>
           </CardContent>
         </Card>
-
-        <p className="text-center text-xs text-slate-700">
-          © {new Date().getFullYear()} Northshore Mechanical & Construction LLC
-        </p>
+        <p className="text-center text-xs text-slate-700">© {new Date().getFullYear()} Northshore Mechanical & Construction LLC</p>
       </div>
     </div>
   );
@@ -150,7 +135,7 @@ function LoginScreen({ onLogin }) {
 // ================================================================
 // DASHBOARD
 // ================================================================
-function Dashboard({ jobs, estimates }) {
+function Dashboard({ jobs, estimates, clients }) {
   const activeJobs = jobs.filter(j => j.status === "Active");
   const openEst = estimates.filter(e => e.status === "Draft" || e.status === "Sent");
   const approvedEst = estimates.filter(e => e.status === "Approved");
@@ -158,6 +143,11 @@ function Dashboard({ jobs, estimates }) {
   const pipeline = openEst.reduce((s, e) => s + (e.grand_total||0), 0);
   const graphData = estimates.slice(-10).map(e => ({ name: formatDate(e.created_at), total: Math.round(e.grand_total||0) }));
   const jobData = jobs.slice(0, 6).map(j => ({ name: j.name.split("—")[0].trim(), budget: j.budget, actual: j.actual||0 }));
+
+  const getClientName = (clientId) => {
+    const c = clients.find(c => c.id === clientId);
+    return c ? c.name : null;
+  };
 
   return (
     <div className="space-y-6">
@@ -199,7 +189,6 @@ function Dashboard({ jobs, estimates }) {
             ) : <div className="h-[200px] flex items-center justify-center text-slate-600 text-sm">Create estimates to see trend</div>}
           </CardContent>
         </Card>
-
         <Card>
           <CardContent className="p-6">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Budget vs Actual</h2>
@@ -229,7 +218,12 @@ function Dashboard({ jobs, estimates }) {
               return (
                 <div key={j.id}>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-slate-200 font-medium">{j.name}</span>
+                    <div>
+                      <span className="text-slate-200 font-medium">{j.name}</span>
+                      {j.client_id && getClientName(j.client_id) && (
+                        <span className="text-slate-500 text-xs ml-2">— {getClientName(j.client_id)}</span>
+                      )}
+                    </div>
                     <span className="text-slate-400">{currency(j.actual||0)} <span className="text-slate-600">/ {currency(j.budget)}</span></span>
                   </div>
                   <div className="w-full bg-slate-800 h-2 rounded-full">
@@ -250,7 +244,12 @@ function Dashboard({ jobs, estimates }) {
           <div className="space-y-2">
             {estimates.slice(0,5).map(e => (
               <div key={e.id} className="flex justify-between items-center py-2 border-b border-slate-800 last:border-0">
-                <span className="text-slate-200 text-sm">{e.name}</span>
+                <div>
+                  <span className="text-slate-200 text-sm">{e.name}</span>
+                  {e.client_id && getClientName(e.client_id) && (
+                    <span className="text-slate-500 text-xs ml-2">— {getClientName(e.client_id)}</span>
+                  )}
+                </div>
                 <div className="flex items-center gap-3">
                   <span className="text-amber-400 font-semibold text-sm">{currency(e.grand_total)}</span>
                   <Badge label={e.status} color={e.status==="Approved"?"green":e.status==="Sent"?"yellow":"gray"} />
@@ -267,9 +266,11 @@ function Dashboard({ jobs, estimates }) {
 // ================================================================
 // ESTIMATOR
 // ================================================================
-function Estimator({ settings, onEstimateSaved, onJobCreated }) {
+function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
   const [tab, setTab] = useState("Materials");
   const [estName, setEstName] = useState("New Estimate");
+  const [selectedClientId, setSelectedClientId] = useState("");
+  const [selectedJobId, setSelectedJobId] = useState("");
   const [materials, setMaterials] = useState([]);
   const [labor, setLabor] = useState([]);
   const [contingencyPct, setContingencyPct] = useState(2);
@@ -283,7 +284,7 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
   const [lTask, setLTask] = useState(""); const [lRate, setLRate] = useState(""); const [lHours, setLHours] = useState("");
 
   useEffect(() => {
-    supabase.from("estimates").select("*").order("created_at", { ascending: false })
+    supabase.from("estimates").select("*, clients(name), jobs(name)").order("created_at", { ascending: false })
       .then(({ data }) => { if (data) setSavedEstimates(data); });
   }, []);
 
@@ -311,13 +312,17 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
 
   const saveEst = async (status = "Draft") => {
     setSaving(true);
-    const { data, error } = await supabase.from("estimates").insert({
+    const payload = {
       name: estName,
       materials,
       labor,
       grand_total: grandTotal,
       status,
-    }).select().single();
+      client_id: selectedClientId || null,
+      job_id: selectedJobId || null,
+    };
+
+    const { data, error } = await supabase.from("estimates").insert(payload).select("*, clients(name), jobs(name)").single();
 
     if (!error && data) {
       setSavedEstimates(prev => [data, ...prev]);
@@ -328,6 +333,7 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
           status: "Active",
           budget: grandTotal,
           actual: 0,
+          client_id: selectedClientId || null,
         }).select().single();
         if (job) onJobCreated(job);
       }
@@ -375,6 +381,31 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
           <Btn onClick={()=>saveEst("Approved")} disabled={saving} className="bg-emerald-600 hover:bg-emerald-500">Approve → Job</Btn>
         </div>
       </div>
+
+      {/* Client + Job Link */}
+      <Card>
+        <CardContent className="p-4">
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Link to Client & Job</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Client</label>
+              <Select value={selectedClientId} onChange={e=>setSelectedClientId(e.target.value)}>
+                <option value="">— No client —</option>
+                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </Select>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Existing Job (optional)</label>
+              <Select value={selectedJobId} onChange={e=>setSelectedJobId(e.target.value)}>
+                <option value="">— No job / will create new —</option>
+                {jobs.filter(j => !selectedClientId || j.client_id === selectedClientId).map(j => (
+                  <option key={j.id} value={j.id}>{j.name}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="p-4">
@@ -487,7 +518,8 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
           <Card className="border-amber-900/30">
             <CardContent className="p-5">
               <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Estimate Summary</p>
-              <p className="text-slate-300 font-medium text-sm mb-3 truncate">{estName}</p>
+              <p className="text-slate-300 font-medium text-sm mb-1 truncate">{estName}</p>
+              {selectedClientId && <p className="text-slate-500 text-xs mb-3">{clients.find(c=>c.id===selectedClientId)?.name}</p>}
               <div className="space-y-1.5">
                 {lineItems.map(li => (
                   <div key={li.label} className={`flex justify-between text-sm ${li.bold ? "font-semibold text-slate-200 border-t border-slate-700 pt-1.5 mt-1.5" : "text-slate-400"}`}>
@@ -515,8 +547,11 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {savedEstimates.map(e => (
                   <div key={e.id} className="flex justify-between items-center text-xs py-1.5 border-b border-slate-800 last:border-0">
-                    <span className="text-slate-300 truncate mr-2">{e.name}</span>
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div>
+                      <p className="text-slate-300 truncate">{e.name}</p>
+                      {e.clients?.name && <p className="text-slate-600">{e.clients.name}</p>}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
                       <span className="text-amber-400 font-medium">{currency(e.grand_total)}</span>
                       <Badge label={e.status} color={e.status==="Approved"?"green":e.status==="Sent"?"yellow":"gray"} />
                     </div>
@@ -535,8 +570,11 @@ function Estimator({ settings, onEstimateSaved, onJobCreated }) {
 // ================================================================
 // JOBS
 // ================================================================
-function Jobs({ jobs, setJobs }) {
-  const [name, setName] = useState(""); const [budget, setBudget] = useState(""); const [status, setStatus] = useState("Active");
+function Jobs({ jobs, setJobs, clients }) {
+  const [name, setName] = useState("");
+  const [budget, setBudget] = useState("");
+  const [status, setStatus] = useState("Active");
+  const [selectedClientId, setSelectedClientId] = useState("");
   const [filter, setFilter] = useState("All");
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -545,10 +583,11 @@ function Jobs({ jobs, setJobs }) {
     if (!name || !budget) return;
     setLoading(true);
     const { data, error } = await supabase.from("jobs").insert({
-      name, budget: parseFloat(budget), actual: 0, status, notes: ""
+      name, budget: parseFloat(budget), actual: 0, status, notes: "",
+      client_id: selectedClientId || null,
     }).select().single();
     if (!error && data) setJobs(j => [data, ...j]);
-    setName(""); setBudget("");
+    setName(""); setBudget(""); setSelectedClientId("");
     setLoading(false);
   };
 
@@ -563,15 +602,20 @@ function Jobs({ jobs, setJobs }) {
     setJobs(j => j.filter(x => x.id!==id));
   };
 
+  const getClientName = (clientId) => {
+    const c = clients.find(c => c.id === clientId);
+    return c ? c.name : null;
+  };
+
   const filtered = jobs.filter(j => filter==="All" || j.status===filter);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Jobs</h1>
-        <select value={filter} onChange={e=>setFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+        <Select value={filter} onChange={e=>setFilter(e.target.value)} className="w-40">
           {["All","Active","Estimating","Paused","Completed"].map(f => <option key={f}>{f}</option>)}
-        </select>
+        </Select>
       </div>
 
       <Card>
@@ -580,10 +624,14 @@ function Jobs({ jobs, setJobs }) {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <Inp placeholder="Job name / address" value={name} onChange={e=>setName(e.target.value)} className="md:col-span-2" />
             <Inp placeholder="Budget $" type="number" value={budget} onChange={e=>setBudget(e.target.value)} />
-            <select value={status} onChange={e=>setStatus(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+            <Select value={status} onChange={e=>setStatus(e.target.value)}>
               {["Active","Estimating","Paused","Completed"].map(s => <option key={s}>{s}</option>)}
-            </select>
-            <Btn onClick={addJob} disabled={loading} className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-4">Add Job</Btn>
+            </Select>
+            <Select value={selectedClientId} onChange={e=>setSelectedClientId(e.target.value)} className="md:col-span-2">
+              <option value="">— Link to client (optional) —</option>
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+            <Btn onClick={addJob} disabled={loading} className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-2">Add Job</Btn>
           </div>
         </CardContent>
       </Card>
@@ -594,10 +642,11 @@ function Jobs({ jobs, setJobs }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-slate-500 border-b border-slate-800 text-xs uppercase tracking-wider">
-                  <th className="py-3 px-4 font-medium">Job Name</th>
+                  <th className="py-3 px-4 font-medium">Job</th>
+                  <th className="py-3 px-4 font-medium">Client</th>
                   <th className="py-3 px-4 font-medium">Status</th>
                   <th className="py-3 px-4 font-medium">Budget</th>
-                  <th className="py-3 px-4 font-medium">Actual Spent</th>
+                  <th className="py-3 px-4 font-medium">Actual</th>
                   <th className="py-3 px-4 font-medium">Margin</th>
                   <th className="py-3 px-4 font-medium">Burn</th>
                   <th className="py-3 px-4" />
@@ -613,6 +662,9 @@ function Jobs({ jobs, setJobs }) {
                     <React.Fragment key={j.id}>
                       <tr className="border-b border-slate-800 hover:bg-slate-800/30 cursor-pointer" onClick={()=>setExpandedId(isExpanded?null:j.id)}>
                         <td className="py-3 px-4 text-slate-200 font-medium">{j.name}</td>
+                        <td className="py-3 px-4 text-slate-400 text-xs">
+                          {j.client_id ? (getClientName(j.client_id) || <span className="text-slate-600">—</span>) : <span className="text-slate-600">—</span>}
+                        </td>
                         <td className="py-3 px-4">
                           <select value={j.status} onClick={e=>e.stopPropagation()} onChange={e=>updateJob(j.id,{status:e.target.value})} className={`bg-transparent text-sm ${statusColor(j.status)}`}>
                             {["Active","Estimating","Paused","Completed"].map(s=><option key={s}>{s}</option>)}
@@ -634,12 +686,19 @@ function Jobs({ jobs, setJobs }) {
                       </tr>
                       {isExpanded && (
                         <tr className="border-b border-slate-800 bg-slate-900/50">
-                          <td colSpan={7} className="px-4 py-3">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <td colSpan={8} className="px-4 py-3">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                               <div>
                                 <label className="text-xs text-slate-500 block mb-1">Job Notes</label>
                                 <textarea value={j.notes||""} onChange={e=>updateJob(j.id,{notes:e.target.value})} rows={2}
                                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50" placeholder="Add notes..." />
+                              </div>
+                              <div>
+                                <label className="text-xs text-slate-500 block mb-1">Client</label>
+                                <Select value={j.client_id||""} onChange={e=>updateJob(j.id,{client_id:e.target.value||null})}>
+                                  <option value="">— No client —</option>
+                                  {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                                </Select>
                               </div>
                               <div className="text-xs text-slate-500 space-y-1">
                                 <p>Created: {formatDate(j.created_at)}</p>
@@ -652,7 +711,7 @@ function Jobs({ jobs, setJobs }) {
                     </React.Fragment>
                   );
                 })}
-                {filtered.length===0 && <tr><td colSpan={7} className="py-8 text-center text-slate-600">No jobs. Add one above.</td></tr>}
+                {filtered.length===0 && <tr><td colSpan={8} className="py-8 text-center text-slate-600">No jobs. Add one above.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -665,11 +724,12 @@ function Jobs({ jobs, setJobs }) {
 // ================================================================
 // CLIENTS
 // ================================================================
-function Clients() {
+function Clients({ jobs, estimates }) {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [phone, setPhone] = useState(""); const [company, setCompany] = useState(""); const [notes, setNotes] = useState("");
   const [filter, setFilter] = useState("All");
+  const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
     supabase.from("clients").select("*").order("created_at", { ascending: false })
@@ -695,15 +755,18 @@ function Clients() {
 
   const filtered = clients.filter(c => filter==="All" || c.status===filter);
 
+  const getClientJobs = (clientId) => jobs.filter(j => j.client_id === clientId);
+  const getClientEstimates = (clientId) => estimates.filter(e => e.client_id === clientId);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Clients</h1>
         <div className="flex items-center gap-2">
           <span className="text-slate-500 text-sm">{clients.length} total</span>
-          <select value={filter} onChange={e=>setFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+          <Select value={filter} onChange={e=>setFilter(e.target.value)} className="w-36">
             {["All","Prospect","Active","Closed"].map(f=><option key={f}>{f}</option>)}
-          </select>
+          </Select>
         </div>
       </div>
 
@@ -730,34 +793,89 @@ function Clients() {
                   <th className="py-3 px-4 font-medium">Name</th>
                   <th className="py-3 px-4 font-medium">Contact</th>
                   <th className="py-3 px-4 font-medium">Status</th>
-                  <th className="py-3 px-4 font-medium">Notes</th>
+                  <th className="py-3 px-4 font-medium">Jobs</th>
+                  <th className="py-3 px-4 font-medium">Estimates</th>
                   <th className="py-3 px-4 font-medium">Added</th>
                   <th className="py-3 px-4" />
                 </tr></thead>
                 <tbody>
-                  {filtered.map(c => (
-                    <tr key={c.id} className="border-b border-slate-800 hover:bg-slate-800/20">
-                      <td className="py-3 px-4">
-                        <p className="text-slate-200 font-medium">{c.name}</p>
-                        {c.company && <p className="text-slate-500 text-xs">{c.company}</p>}
-                      </td>
-                      <td className="py-3 px-4 text-slate-400 text-xs">
-                        {c.email && <p>{c.email}</p>}
-                        {c.phone && <p>{c.phone}</p>}
-                      </td>
-                      <td className="py-3 px-4">
-                        <select value={c.status} onChange={e=>updateClient(c.id,{status:e.target.value})} className={`bg-transparent text-sm ${statusColor(c.status)}`}>
-                          {["Prospect","Active","Closed"].map(s=><option key={s}>{s}</option>)}
-                        </select>
-                      </td>
-                      <td className="py-3 px-4">
-                        <Inp value={c.notes||""} onChange={e=>updateClient(c.id,{notes:e.target.value})} className="py-1 text-xs" placeholder="Notes..." />
-                      </td>
-                      <td className="py-3 px-4 text-slate-500 text-xs">{formatDate(c.created_at)}</td>
-                      <td className="py-3 px-4 text-right"><Btn onClick={()=>removeClient(c.id)} className="text-xs py-1 px-2 bg-slate-900">Remove</Btn></td>
-                    </tr>
-                  ))}
-                  {filtered.length===0 && <tr><td colSpan={6} className="py-8 text-center text-slate-600">No clients yet.</td></tr>}
+                  {filtered.map(c => {
+                    const clientJobs = getClientJobs(c.id);
+                    const clientEsts = getClientEstimates(c.id);
+                    const isExpanded = expandedId === c.id;
+                    return (
+                      <React.Fragment key={c.id}>
+                        <tr className="border-b border-slate-800 hover:bg-slate-800/20 cursor-pointer" onClick={()=>setExpandedId(isExpanded?null:c.id)}>
+                          <td className="py-3 px-4">
+                            <p className="text-slate-200 font-medium">{c.name}</p>
+                            {c.company && <p className="text-slate-500 text-xs">{c.company}</p>}
+                          </td>
+                          <td className="py-3 px-4 text-slate-400 text-xs">
+                            {c.email && <p>{c.email}</p>}
+                            {c.phone && <p>{c.phone}</p>}
+                          </td>
+                          <td className="py-3 px-4">
+                            <select value={c.status} onClick={e=>e.stopPropagation()} onChange={e=>updateClient(c.id,{status:e.target.value})} className={`bg-transparent text-sm ${statusColor(c.status)}`}>
+                              {["Prospect","Active","Closed"].map(s=><option key={s}>{s}</option>)}
+                            </select>
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="text-slate-300 text-xs">{clientJobs.length} job{clientJobs.length!==1?"s":""}</span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="text-slate-300 text-xs">{clientEsts.length} estimate{clientEsts.length!==1?"s":""}</span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-500 text-xs">{formatDate(c.created_at)}</td>
+                          <td className="py-3 px-4 text-right"><Btn onClick={e=>{e.stopPropagation();removeClient(c.id);}} className="text-xs py-1 px-2 bg-slate-900">Remove</Btn></td>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="border-b border-slate-800 bg-slate-900/50">
+                            <td colSpan={7} className="px-4 py-4">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Jobs</p>
+                                  {clientJobs.length === 0 ? <p className="text-slate-600 text-xs">No jobs linked</p> : (
+                                    <div className="space-y-1">
+                                      {clientJobs.map(j => (
+                                        <div key={j.id} className="flex justify-between items-center text-xs py-1 border-b border-slate-800">
+                                          <span className="text-slate-300">{j.name}</span>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-slate-500">{currency(j.budget)}</span>
+                                            <Badge label={j.status} color={j.status==="Active"?"green":j.status==="Completed"?"blue":"gray"} />
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Estimates</p>
+                                  {clientEsts.length === 0 ? <p className="text-slate-600 text-xs">No estimates linked</p> : (
+                                    <div className="space-y-1">
+                                      {clientEsts.map(e => (
+                                        <div key={e.id} className="flex justify-between items-center text-xs py-1 border-b border-slate-800">
+                                          <span className="text-slate-300">{e.name}</span>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-amber-400">{currency(e.grand_total)}</span>
+                                            <Badge label={e.status} color={e.status==="Approved"?"green":e.status==="Sent"?"yellow":"gray"} />
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="mt-3">
+                                <label className="text-xs text-slate-500 block mb-1">Notes</label>
+                                <Inp value={c.notes||""} onChange={e=>updateClient(c.id,{notes:e.target.value})} className="text-xs" placeholder="Notes..." onClick={e=>e.stopPropagation()} />
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  {filtered.length===0 && <tr><td colSpan={7} className="py-8 text-center text-slate-600">No clients yet.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -839,10 +957,10 @@ function Schedule({ jobs }) {
           <p className="text-sm text-slate-400 font-medium">Add Task / Event</p>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <Inp placeholder="Title" value={title} onChange={e=>setTitle(e.target.value)} className="md:col-span-2" />
-            <select value={job} onChange={e=>setJob(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+            <Select value={job} onChange={e=>setJob(e.target.value)}>
               <option value="">General</option>
               {jobs.map(j=><option key={j.id} value={j.name}>{j.name}</option>)}
-            </select>
+            </Select>
             <Inp type="date" value={date} onChange={e=>setDate(e.target.value)} />
             <Btn onClick={addEvent} className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-4">Add</Btn>
           </div>
@@ -920,11 +1038,11 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [jobs, setJobs] = useState([]);
   const [estimates, setEstimates] = useState([]);
+  const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // Auth check on mount
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -936,16 +1054,17 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Data load — only runs when session exists
   useEffect(() => {
     if (!session) return;
     async function loadData() {
-      const [{ data: jobsData }, { data: estimatesData }] = await Promise.all([
+      const [{ data: jobsData }, { data: estimatesData }, { data: clientsData }] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
+        supabase.from("clients").select("*").order("created_at", { ascending: false }),
       ]);
       if (jobsData) setJobs(jobsData);
       if (estimatesData) setEstimates(estimatesData);
+      if (clientsData) setClients(clientsData);
       setLoading(false);
     }
     loadData();
@@ -954,14 +1073,12 @@ export default function App() {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setSession(null);
-    setJobs([]);
-    setEstimates([]);
+    setJobs([]); setEstimates([]); setClients([]);
   };
 
   const handleEstimateSaved = (est) => setEstimates(prev => [est, ...prev]);
   const handleJobCreated = (job) => setJobs(prev => [job, ...prev]);
 
-  // Auth loading
   if (!authChecked) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -970,12 +1087,8 @@ export default function App() {
     );
   }
 
-  // Not logged in
-  if (!session) {
-    return <LoginScreen onLogin={setSession} />;
-  }
+  if (!session) return <LoginScreen onLogin={setSession} />;
 
-  // Data loading
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -995,7 +1108,7 @@ export default function App() {
             <span className="text-black font-black text-sm">N</span>
           </div>
           <div>
-            <h1 className="text-base font-bold leading-none">Northshore OS <span className="text-amber-400 text-xs font-normal">v2</span></h1>
+            <h1 className="text-base font-bold leading-none">Northshore OS</h1>
             <p className="text-xs text-slate-600 leading-none mt-0.5">Mechanical & Construction</p>
           </div>
         </div>
@@ -1006,8 +1119,7 @@ export default function App() {
               {t}
             </button>
           ))}
-          <button
-            onClick={handleLogout}
+          <button onClick={handleLogout}
             className="px-3 py-1.5 rounded-lg text-sm font-medium text-slate-500 hover:text-rose-400 hover:bg-rose-900/20 transition-all ml-2 border border-slate-800">
             Sign Out
           </button>
@@ -1015,11 +1127,11 @@ export default function App() {
       </header>
 
       <main className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
-        {tab==="Dashboard" && <Dashboard jobs={jobs} estimates={estimates} />}
-        {tab==="Estimator" && <Estimator settings={settings} onEstimateSaved={handleEstimateSaved} onJobCreated={handleJobCreated} />}
-        {tab==="Jobs" && <Jobs jobs={jobs} setJobs={setJobs} />}
+        {tab==="Dashboard" && <Dashboard jobs={jobs} estimates={estimates} clients={clients} />}
+        {tab==="Estimator" && <Estimator settings={settings} onEstimateSaved={handleEstimateSaved} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
+        {tab==="Jobs" && <Jobs jobs={jobs} setJobs={setJobs} clients={clients} />}
         {tab==="Schedule" && <Schedule jobs={jobs} />}
-        {tab==="Clients" && <Clients />}
+        {tab==="Clients" && <Clients jobs={jobs} estimates={estimates} />}
         {tab==="Settings" && <Settings settings={settings} setSettings={setSettings} />}
       </main>
 
