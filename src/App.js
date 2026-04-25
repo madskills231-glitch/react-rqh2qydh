@@ -19,6 +19,9 @@ function getCompany(s) {
   };
 }
 
+// Northshore logo — base64 encoded JPEG (200px, dark navy bg, blends with header)
+const LOGO_BASE64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFBgoGBgUFBgwICQcKDgwPDg4MDQ0PERYTDxAVEQ0NExoTFRcYGRkZDxIbHRsYHRYYGRj/2wBDAQQEBAYFBgsGBgsYEA0QGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBj/wAARCADwAPADASIAAhEBAxEB/8QAHQABAAIDAQEBAQAAAAAAAAAAAAcIBQYJBAMCAf/EAFsQAAEDAwIDBAQIBwkKDQUAAAECAwQABQYHEQgSIRMxQVEJFCJhFTI4QnFydbMWNlJigbG0GCMzN1NjdHaRFyQoNVRlgpOU0xklJjlDREZVc4OSoaSVssTS4v/EABoBAQADAQEBAAAAAAAAAAAAAAABAgQDBQb/xAAwEQACAgEDAQUHBAMBAAAAAAAAAQIDEQQSITETFDNBUQUiMmFxgcEVkaGxNNHwgv/aAAwDAQACEQMRAD8Ao/SlK9Q8kUpSgFKUoBSlKAUpSgFKUoBSlKAUpSpApSlAKUpUAUpSgFKUoBSlKAUpSgFKUoBSlKAUpSpApSlQBSlKAUpSpApSlAKUpQCle+zWK9ZHeG7Tj9onXWe4CURILCn3VAd5CUgnb30vNjvWOXhy05BaJ9qntgFcWcwph1IPcSlQB299RlZwTh4yeClKVYgUpSoApSlAKUpUAUpSpApSlQBSlKAUpSgFKUoBSlKkClKUApSlQBSh2A3OwHmannSLhP1J1PEe6z45xfHXNlC43Fohx9P8yx0Uv6yuVPvNVssjWsyeC8K5WPEUQUxHflSmo0Vhx991QQ200grWtR7glI6k+4VaXSPgnzHK+wvOpEh3FLQrZYgpAVcHk+9J3SyPerdX5tWjxbTTQ3hnxI5HLeg299CeR3Ib0tK5TytuqWunTf8AIaTv5799V71c45brce3sukVvXaox3Qb7PbCpKx5stHdLfuUrmV7k1571Vt7xQsL1Ny09dK3XPn0LFS7noPwsYP6slMGxl1HMmLHHrFyuJHievOv6yiED3V+41w0J4pcFLCkwL+lpG6o747C424nxHz2/pSSg++uW11u10vl4kXa9XGVcZ8hXO9KluqdccPmpSiSa/tovF2sF6j3ix3KXbbhGVzsy4jqmnGz7lJO4p+ncbtz3eo79zjb7pZzV3gozHFO3vOmz7uVWhO6zBUAmewn3JGyXgPNOyvzaq0+w/FlORpLLjLzSihxp1BQtCh3hST1B9xq5GkXHLcYXYWTV6Aq4RxsgX63tAPoHm8yNg571I2P5pqwWW6X6IcSuIpyOK9BnvOJ5WcisriUyWj4Jc6e1t+Q6Nx7qLVW0Pbesr1D09dy3Uvn0OWNKnfV7hT1I0t9YusSMcmxxvdXwnbmiVsp832eqkfWHMn3ioI7xuNiD4ivQrsjYt0XkwzrlB4khSlKsUFKUqQKUpUAUpSgFKUqQKUpUAUpSgFKUoBSlKnIFSFpNoxm+suSvWvEojKWIoSqbcZa+SPFSonl5iNypR2OyUgk7HuA3qPavl6P38Qs5P+co33Kqzaq11VOcepo01SssUZdCQdM+F/SbRm1fhTlD8S93SGjtXrze+RuLEI+c20o8iPcpRUryI7q0PV3jksdpMizaTQUXuaN0Kvc5CkxWz3btNnZTp96uVP1hVduKPPcwyXiEynHL1f5kmz2e5uRoFu5uVhhCdtiEDYFX5x3PvrQ9Lk6evam2+Hqg1POOSldg/KhSSwuIpRHK8SAeZAPxh5Enw2OWvSbl2tz3P0NM9TtfZVLBjcwzjLc/yNd9zG/zbxPV0Dsle4bH5LaBslCfckAVr9dJ2+CLQh1pLjSclcbWkKStF45kqB6gghHUEeNfr9w9oZ/I5R/9W/8A4q69o0xWF/RV6G1vLZzWpUk64aRXXRrVaVjUwuSLa8DJtc9SdhJjk7Dfw50n2VDzG/cRUbVuhNTSlHoYpRcXtYrYsMzzMNPcjTfcMyCZaJo251ML9h0D5riDulxPuUDVw9FeHrhx1k0ti5PbmMkjzmyI9yt4vO6okgDqn4m5Qoe0lXiD5g1IEjgn0EiRHZUr8I2GGUKccddvPKhtKRuVKJR0AAJJrFZr6k3Caf7GuGjs4lFmraRccWPXssWbVeE3YJ52QLzDSpUN0927iOqmd/Mcyfq1ump/CxpVrBbTlGKPxbDdpie2au1nCHYczf5zjSTyK38VoKVee/dXPXUBeEnUa5o06jTmMaad7KEqc+Xnn0p6F1RIG3Od1BO3QEeO9SlwoZ7mGP8AERi+K2m/zGLHeJ4YnW0q52HUlCjvyHcJVuB7Sdj7652aXYu1pe1+h0r1O59naso0TVXR7NtHcoas+XwmkokhS4c+KvtI8tCSAShXQgjcbpUARuOnUGtCq9vpBPxPwLf/AC6Z903VEq16W121KUupl1NarscUKUpXc4ClKUApSlAKUpQClKUApSlAKUpQClKUAq+Xo/fxBzn7SjfcqqhtXy9H7+IOc/aUb7lVYvaHgP7f2bNB4yKscQ3yqtQPtt/9YqM1fwavqn9VSZxDfKr1A+23/wBYqM1/wavqn9VaafDj9EcLPEf1Ox+mX8SOG/YcH9nRW1VqumP8SOG/YcH9nRWkZ3rZD064ksWwrJFtMWDIbYopmrG3qksPlCFLV/JrBCDv8U8p7t6+a2Oc2o/M9/coxTZkNe9HbdrPpRIsK+yYvUQmTaZqx/Av7bcij/JrHsq/QrvSK5SXW1XGx32ZZrvCdhz4Tyo8iM8NltOJOykn6CK7WEd4I2Pkap1xpaE/DFoc1gxaHvPhNhN8YaT1fYSNkydvFSBsFeaNj801u9n6rY+zl0Zj1un3rfHqjD+j4+PqD9WD+t6rS60fJu1A/q7P/Z11Vv0fHx9Qfqwf1vVaPWj5N2f/ANXZ/wCzrrnq/wDK+6/B00v+OvucgKlXhq+VvgH2sn/7F1FXhUq8NXyt8A+1k/drr27/AA5fQ8en40WY9IJ+J2Bf06Z903VEqvb6QP8AE7Av6bM+6bqiVZ9B4Ef+8zRrvGYp40pWwxilKVIFKUqAKUpQClKUApSlAKUpQClKUAq+Xo/fxBzn7SjfcqqhtXy9H7+IWc/aUX7lVYvaHgP7GzQ+MirHEN8qrUD7bf8A1iozV/Bq+qf1VJnEN8qrUD7bf/WKjNX8Gr6D+qtVPhx+hwt8R/U7H6ZfxI4b9hwf2dFU548JLcPWTCH3mQ+yLQ8l1k9ziDIIUn9IJ+g7GrjaZfxI4b9hwf2dFUx9ICNtTsMP+aH/ANorwtJFSv2v5nsaiThUpLqsE0cMesS75Ab0wym5GVeIMRMmy3J5XW72/b2ST4vNj2VjvIG/go1Y51pt5hbLzaHWnElC23E8yVJI2IIPeCCQRXKjTS4XC8Y23Cs9xVb8pxt8XKxzUHZSOvVG/inm6Ed2yhv03robofq9btX9OE3XskQb9BUIl5te+yosgd5APXs1bEpP0p70mscs75wl8UHh/iX3X7PKPSuqUYV31+HYsr5NfFH/AMv91hmuaK6K/wBx7VzUH4Jb2xi9JiSrX13LGyne0jn6hUOU+KVJ8Qa3bWj5N2f/ANXZ/wCzrrea0bWj5N2f/wBXZ/7Ouum9zsUpdeDJsUINL5nICpV4aflb4B9rJ+7XUVeFSrw0/K3wD7WT92uvpLvDl9D5+n40WY9IJ+J+Bf02Z903VEqvb6QT8TsC/p0z7puqJVn9n+BH7/2d9d4zFKUrYZBSlKAUpSpApSlQBSlKAUpSgFKUoBSlKAVfH0fv4h5z9oxfuVVQ6rkcC+o2G40rJcPyG9xrXcrtKjvwPW1htuRyoUhSAs+yF7kbAkb79N9qya6LlS8GvRSStWSAuIb5VWoH22/+sVGyGnX3UsMNrddcPIhtA3UpR6AADvJJA2roLr1wcM53kd0zjArz6lf5zqpMu23JZMeS4e8tubbtKPkQU/VqnERnNNBtZYFwyLDWmb5anPWI0O9sKWwpYBCXU8qgHAk+0kpURuAfCp0+ohOtKD5S6EX0ShPMuh1YwS3TLPpXjNpuLJYmQ7TEjvtE7lDiGUJUnp5EEVTb0gVnuJyTCr+Ijht3qkiEZIHsJe7QOBBPgSncjz2Pka1P93lrB/3Hh3+xvf76tX1C4s8/1N09n4blGN4k5b5gSedmI6l1lxJ3S42ounlWD47HoSD0JrFp9JdXarGjXdqap17EyH8Rv7mMZjCvCOYoaXyvIHz21dFj+zr9IFWKTkt40n1IhawYckyoi0JavdvQrZE+KrY8/uPcQrwISe7m3q141vVp1XyO040zYkxbbLitNlketNKWVIO/sq2UARsdvorj7U0F8769VpUnJcST4zH0/wC/B6nsX2ppYaS7Qa5tQl70WllxmvP7+fyWPM6yYlldizjCrbleNzUzLXcGQ8w6OhHgUqHzVpIKVDwINYDWj5N2f/1dn/s665u6TcR2oOjduuVsxdNsk22c8JHqNxaW63Hc7iprZaSkkbA9Tvyg943rccn409VMrwm74vcbNijcO6wnYL62IjyXEocQUKKSXSAdidtwat+nWKeY9Dz+/VuOH1K41KvDT8rfAPtZP3a60nEMJyzPslbsGHWGZd569iWoyNw2n8paj7KE/nKIFXu0B4PWNPMjtmdZzejOyOEvt4sC3K2jRV8pG61kbuqAJ7uVP1q9LVXwrg4yfLPP01M5yTS4Nf8ASB/idgX9OmfdN1RKrg8cupWG5VMxnEsavUe6zrO/JenriLDjTBWlCUt846KX7KiQCdvHqdqp9UaGLVEUyda07XgUpStRlFKUoBSlKAUpSgFKUoBSlKAUpSgFKUoBTw2PUeRpSpBPOkHFfqRpcI9pnSDlGON7J+Dri6S4wn+Ye6qR7knmT7hV1Ma1C0M4nsOOPymIVxeKOd2w3dAbmRlbdVtbHc7fyjSvp27q5ZV9YsqTCmtTIch6NIZUFtPMrKFtqHcpKh1B94rFdooWPdHhmurVygtsuUW51e4Hr9Zu3vek0xy+wBus2aWtKZjQ8ml9EvD3HlV9aqkzoE613N+3XOHIhzI6y29GktltxpQ7wpKgCD9NWq0i43MqxvsLLqjFdya1jZAujPKmeyPNe+yXx9OyvzjVnbzimhPFJhIuzLsK7rQgIRdrersbhBJ7kr3HMn6jgKfLzritRbp3tuWV6o7Oiq9ZqeH6HLClWE1g4RdRNNRIvFiQvLMdb3WZUJo+sx0+bzA3Ow8VI5h58tfzSHhG1F1JEe73xtWJ465ssS5zR9YkJ82WDsdj4KXyp8t62d6q2793Bl7tZu2Y5IEgwJtzuTFutsORMmSFhtmPHbLjjqj3BKUgkn3Cra6Q8D9/vXYXvVmY7YYB2WmzRFBUx0eTi+qWR7hzK+rVkrLiOhPC5hKrw85CtC1J5F3e4q7afNO3VCNhzHf8htIHn51WHV7jbynJO3sul0Z3GbWd0G6O7Ge8PNG26WB9G6vzhWN6m3UPFKwvU1KiqhZteX6Fmsm1E0N4YcOGPRI8O3PhHO1YLQgOTJCtui3STuN/y3VfRv3VSrV/ir1H1TEi0xZBxnG3N0/BludIW+n+fe6KX9Ucqfcag6TKkzZrsyZIekSHlFbrzyytbij3qUo9Sfea+Vd6dFCt7pcv1ON2rlNbY8IeGw6DwApSlbDIKUpUAUpSgFKUoBSlKAUpSgFKVJGjmi2S62ZFc7NjVxtcJ+3RUy3VXBa0pUlTgQAnkSrrufGqykoLdLoWjBzeIkb0qTtQdDMu041es2nt8lW16deAwYkuMtZjqDrpaG5KQfZUOvT+2slrJw55nolY7ZdMnutkmM3GUuI0m3OuKUlSEc5KudCem1VV0HhJ9ehZ0zWeOhD9KsPpfwd6j6j4bFyuRcrVjdrmoDsT4QDjjz7Z7nA2geyk94KiCR122IJ/Wp3BxqRp1hkrKotytWS22Eguy028ONvsNjvc7NY9pI7zykkDrtsDtTvNW7Zu5L92s27scFdqVMOjXDnl2tthut1xu82WA1bZKIrqbgpwKWpaOcFPIlXTapBuPAhq9Fgrfg3vE7g6kbiOiW60pfuBW2E7/SQPfSWpqi9spckR09kluSKu0qS8C0OzPOtZp2mBTGsN/gsPPSWrtzpDfZFPMk8gUSTzpII6Edd9tqmMcA2qBH43Yj/rJH+7pPU1QeJSEdPZJZSKo1mcXyzJcKyNm/4nfJtnuTXxZMRwoUR+Sodyk+aVAg+VSpqlwx5lpO1jy75fbFN+HLiLbHEJTp7NwgHmXzIHs9fDc19NXOFzN9G8CGWZFfLBNiGa3B7KAt1TnOsLIOykAbfvZ8fEVPb1Sws9R2NkcvHQnnSbjpt0iO3atXrcqFJQnZN8tTJW24f51ge0gnzRuPzRTVnjqt0eO5atIbcqdJWnZV8urJQ22f5tg+0sjzXsPcahFnhNzx/QpOqib/jotRs5vXqxcd7fsg2XOXbk5ebYee2/jWsaN8P2d61vy3sc9Sg2uEtLci53BSktJWRuG0hIKlr26kDoARuRuN8nd9Llz8l+xq7fUYUPNmh5RluTZtkbt/yy+TbxcneipEtwrIH5KR3JT+akADyrDVaLKOBbVGyY6/c7LfLDkTzCCswIvasvuADfZvtE8qleSdwT4delRXo7odlGtN7u9rx64Wy3P2plDz/wkXEbhSyjYcqSdwQdwdq1xvqcW4vhGadNm5KS5ZGNKllzh/yxviab0QN2s5vjiAsSwtz1YD1cv9/LzfFG3xe+vhrLoTlGiMyzRsludpnKurbrjJtynFcobKQQrmSnqeYbbb1ZXQbUc8so6ZpNtdCLaVZ3DeB3VDJcYjXm9Xiy4yZLYdbhTQ67ISkjcdolA2QdtvZJJHjselahq/wuah6P46MkuD9uvdjC0tvTraV/3upR2T2rawClJPQKG432B23G9I6mpy2KXJd6axR3NcEI0qftMOEvOtVdMoOb2TIsehwpjjraGZqng6ktuFB35UEdSk7dayWU8EusmPWN+6W9VjyJLKCtcW2SF+sEDqeRDiE859wO58AaPU1KW1y5IWnsa3JcFb6VImkGj2Q6y5vNxewXC326XDhqmOLuPOlPKlaUFPspJ5t1jvHgamk8A+qAH43Yh/rJH+7qZ6muD2yeGIaeyazFFUqVnc0xWbg+od5w+5SI8iZaZa4bzscktrUnvKdwDt9IrBV2TTWUcmmnhilKUIFKUoBVvPR//wAbGZfYrP7Smqh1bvgA/jXzL7Ea/aU1l1vgSNOj8VE28VmF/CVw0zzqO1u9Zcohw5CgOvYSH29ifcHEJ/8AXWpekFG+meHg9xvUkf8AxzU1W24w9RL7qbpxdHQXbHe4ymiepQ0ttiSyoD811tY/RUK+kDPNpnhqvyrzIP8A8evL08n2tcH5fnk9K5LZOS8yVeIDI73gfBxdLziE9y0z4sSBHjSI2wUwlbjLZ5PyTykgHw8K/PDPk9+z/hQtd1zG5O3ie+ZsR6TJ2Ut5tLi0DnPzjy9N/HbrWN4r9/3Dd9/8O2/tDNfPg3P+BzZf6VP+/VXPC7vu8934LZfb7fLBofAK2lvT3O2k9EovbKR7gGCBWW0d1bz/ACPjj1D09vmQqnY9bl3AwobjLQMfsZKUICVJSFbBKiOpO9YvgJP/ACEz/wC3WvuVVYfC3dN7tlOTXDDLZam7zDuTlsvUtiAGHzJBClpWspClgkg825BP0VfUSSssys5/gimLcIYeCl/FhmOS6bcZv4S4NdnLNdn8ejNOymG0LUtKitJBC0qHUNoG+2/sirQcPuZZNmPCXbMtya7O3G9PMzlOTHEISpRbddSjokBPQJT4eFc9tfs+uOo/EFf7/cbcu2lh74OZgrUFKYbYJbCVEdCokKUdum6qvZwrn/AXs/uYuX3z1d9VXtohlc8HDT2OV0sPjkozI1i1L1LzLEoGdZZKvUaHeIz7DbzLKA2suISVDkQknp061dPjqbcd4ZW0tNrcP4RReiElR+I/5Vzzw/8AjCx/7Si/fIrrTq1qpj2j2FHLcli3KTCXORCCLc2hbnOsLIOylJG3sHfr5V01i7O2vYvsV0r3wnvZHcFKkejVQlSSkjAlggjYj+9VVj+CZURXCTCTDU0H03SaJBHg5zpKeb/Q5P0bVvOeZLAzHg3yXLLY3IbhXbFJMxhEhIS4lC2FEBQBIB+gmqE8PmqeqGktydueOYnd8hxeeoevQG4by2nVI6do26lBCHUjcb9QR0UOg2z11ytqmlw8nec1XZDzWCc9JOIy5aT3rMMU4jb/AJK5emrihyGh6GuSUI2VzlChts0o8hTt7O3d419+EK72i/8AE9rBfbAlabXcFetxAtvs1dm5LWobpPxT17qmBUTR3i30YTPMcvJQVMpkKQG7hZ5G25Tv127weXcoWP8A2hPgtxqZhnEBqliNxWhyVaWm4Ti0DYLKJKk8wHgCNj+mpbhKux4xLjKK4kpwWcx8j0zWnR6YSG92TnZlhI5+Q8v+K1Dv7qyfFzHZl8RGiEWS0l1l25ci0K6hQMuPuDU3va7YkxxIs6JLgXk391AWmQGm/VdiwX+qufm+KNvi9/8AbUKcWPylNDPtT/8ALj1WqUnZDKx7v4Za2KVcsPPP+jdeMrOcuwPQ6BcMOv0uyzZd7biuy4agh3s+zdWUpV83coTvt5bVlLlcJmaejuk3jI3RNnXHCFS5Tykgdo76vz8+w6b8yQr6a0rj2+T5Zf6xtfcP1tlo/wCbTj/1AP7KapGK7GD88l232k18j48H7ik8F9lcSdlJduCgfIh9wisJwd6rZ3qbjuXqzi/m7u2yZHRFeWy22tCVoWSCUJAI3QCNx061neDfk/ccWDtACj1mdzb+XrC963ixX/T2yaF3HULTLHYL9j9TfuiI9nhphqmlkKCgUlKSFboUPaG42qLpLdZHHLf5JqXuwlnhIrvoNEjW/wBJRqzDiMpaZS3OKUJGwG8plR2/STWH4p9bdYsD4h5OPYVltxtlpTbojyY8eK04kLWklR3U2o9SPOsNwa5HOy3jCy7Kbny+uXa2S5rwR8UKcktLIHuG+w9wqyGqPFLp9pDqKcQyW05FJnIjsyy5b47S2+RzcgbqcSd+h36VonmN6W3c8Lg4QalS3uxycxr9fLvk2Tz8gv01c26T3lSJUlxKUqdcPeohIAH6AKx1ey7Sm51/nzmUqS3IkuvIChsQlSyob+/Y1469hdDyX1FKUqSBSlKAVbz0f4KtV8yAST/xI13Df/rIqodeqFcrjbHFuW24S4S1jlUqM8poqG++xKSNxXK+vtYOHqdabOzmpF7cYzI4z6VrMsfkOFEXI2kQSk9B26IzTrR+n2Vp/wBOv36QNKxpbhnslJN3f25ht19W6VQ5VxuC7mLkufKVNCgsSlPKLvMO48+++4896+k68Xe5tobuV2nzUIPMlMmQt0JPduAonY1mWjxZGafRGh6vMJRx1Opc23Y9xLcIyLXaL76rFvEKNzSWEB5UOQypCy24jcdUrRsUkg7dR3ivpjdjx7hm4Wlwb1kHrMKzsyJC5r7YYMl5xSlhttG56lRCUp3J/wDeuXNjyjJcZfW9jmQ3W0OObc6rfLcYK9u7m5CN/wBNf2+ZTk+TOocyTIrvd1oO6DcJbj/J9XnJ2/RXL9Pl8O73c5wdO/R+Lb72MF5OAAuP6cZy5yEqXeWFkJG+xLBJ/XWW4e8jWzxna54YtStpVzcubLfX4zbym17D6HUf2Vz8gXm9WtC2rXd7hCQs8y0xZK2go925CSN6/jN2u8a5OXGPdJzMxzfnktyFpdXv37rB3O/jua6z0W9zefiKQ1e1RWOhNHF5hqsQ4rL66hhTUW9pbvDG6dgS6NnNv/NQ5/bVw+FVCzwLWdQQsjsLl1CT/LPVzSnXO53R1DtzuEyatCeVK5Ly3Skd+wKidhX2jX+/QoSYkO93OPHTuAyzLcQgb9+yQrbruavbpnZVGtvoUr1ChZKeOp6MP3/ug4/sOvwlF++RXQrjvSpPDG0ShQByKL1II+Y/XN5KltuJWhSkKSQUqSdiCO4g17pt8vlxjhi43m5S2eYL7OTKccTv4HZRI36nrVraN9kZ56Far1CEoY6nS6Ahf/BooV2a9vwBX15T/kqq13ggye03jhoXiDE8C52ybKEmIlzZwNPK50OBPfynmUN+7dJrnoL/AH8W71AXy6CJydl6uJbnZ8m23Ly8223u22rzwLhcbVcG51rnSoMpHxH4rymnE/QpJBFcHocwlHd1eTstYlKLx0WDqVoZofb+H3EslTMys3FifJTLfmSWBEaistIUE826iNwFKKlbgd2wqIuFPI4mZcWms2U2sKXCuSxJjqCT7TZkqCVbeG4AP6apRd84zXIIHqF9y+/3OL0Pq824PPNkju3SpRB/srFwrnc7Y4ty3XGZCUsbLVGfW0VDyJSRvRaGTUnKWWw9ZFOO2OEi7lzQoemJtyeRW5jN9Nuv+LFV++Nq7/g3q7pHkLzS1Itz7sxSeXqoNyGFkD37A1SI3e7Kuouhuk4zgNhLMhZdHTb4+/N3dO/ur+TrrdLoUKuVymzS2CEGS+t3k379uYnaukdJicZN9FgpLVZjKKXV5OqGr+mtm4kdFbbEsmWIiQXZbV2g3SMwJTTg5Fp2KeZPg4fEEEbHxFYLWOZYNFeB+ZiEm6F11FhGO20P7IemOqb7PmCPcCpatugA7+7fm3Y8yy/GWltY5lV7tDazupuBOdYSo+ZSlQBPv2ryXe+XvIJ3rt9vFwukkDlD06St9YHkFLJIHurjHQSTScvdTydZa2LTaj7zOlXB4hZ4MrLytrI7e4dQkn/p11rvA9kCL9oDesVlJLws93eaU1tvuxIHPtt5FXaiufMTIL/AiCJBvlzisJ32ZYluNoG/f7IIFfGDdrrbO0+DbpNh9psV+rSFtc+2+2/KRv3nv86tPQ7t/PV5Kx1ijt46LBb/AIV8Qk4Hx4ZvhjrawbXb5kdvdJ3U0H2i2r6CgoP6anLV7hPxnWHUleZ3fJb9bZKojUUsQ2GlI2bBAO6hvud65oJvV5buTlxRd7giY4nlXJTJWHFjp0K99yOg8fAV6fwqyg/9pbz/ALc7/wDtU2aSyU+0jPDxgiGpgobJRysmW1QxKLgesuS4ZClPyo1pnuRG35CQlxxKdtioDpv18K1Kvo++/KkrkSXnHnnDzLcdUVqUfMk9Sa+dboppJMxSabyhSlKkgUpSgFKUoBSlKkGWxaOxMzuyRJTSXmHrjGadbUNwtCnUhST7iCRV9Mu0D0qb17tGTQcOtUbD7HEubN9traClhySyG+wCxv3q9ZSR9QVz/ts9613qHc4wQXoj7chsLG6SpCgobjy3AqXLtxP6k3q35TCf+BkR8kuUa5zUMMLAQ4z2QCW/bPKhXYN8wO5Ox2I3rJqKrJyTgzVRZCMWpIm3E9LtO5XpGM8wmXhtmex6BalvRbW82fV2XA3HPMBv06rV1/ONaHn+LY7kefYDhMWw6TWVN6vSIz0/A7qua6lslKFJd5hsgHn3T5qHurRbZxG5zaNfb1q6zBsK77eYxiyWHmFmNyEISeVHPvvs0nvUfGsRmmsNxy9m2dhhuGYtJt0sTWJuNWwQXy4Pi8ywo7gHZQHmAa5xpsUk/kv3Lu2va18yY9S79odimpuW6QyNBo3wdamTDh3m0OrVdUyA2lQfUpR2UndXjv3dd99h5sR0YxfOuBi03oXTEcWyFWQyWncgvrxjh1lAUAxzjfruQQNu5JrXp/GBqjNtc5LdrxGDfJ8P1GVkkO1hu4ut7bHdzm2B28k7DoQBsNoxlal36XoRD0jdZt/wHEuS7q24Gz6wXVBQIKubbl9o/N399TGqzal0fHnkO2vOev2Jg4mNLrLYNSdOMRwSy21iXdrJGaWq2pPZzZS3ezD2/wA7mOx38jUka86E4ZbNA783hmDrtl3wVcFUq8erLR8MsKYAfcSs9HOVSuYkdxSar9K4hcxmam4dnEy2Y87ccSgpgW5pcdfYlKUkJW4nn3Usb7gggb7dK+1r4mNVoN2yKXcL6L9Ev8d+LKtl4W4/DbQ6SVBpvnAb2BKRt3A7VHZXYjz0/nn/AET2tWXx1Jf0w0g07z/gztUCXbYEDOr/AHC4xbNelJ5VuSo5U62wtW/xVIQtO230dQK8OTaZYlZ+IrQHGZGHwYbV3tEFV8gKa2EmQVqS72o36q3BB+ioHa1XytjS/HMGguxokPHruu9QJkdKhJRJVudyvm2IBO4G39tbHlfETneY6wYxqTd41kF5xsJTESxHUllfKtTm7ieck9VHuIqext3Np8PI7WvCWPQlnFNLNPZXFVrPKvGMszsewdmVPh46yVNtPFO/Ig7HfkASrp5qG+4GxiLUHONOM404hy7PpLHw7JY0sh6bYlKFufjkH2FJV1Dg3T1HkfPYeOz6657YNcbtqraJEGPeLu44ufG7DniSEOEFTam1H4m6QR13BHfXtz3iCy7UDHLZjUiz4zZsbgTBPFkscL1aLIeB35nQFEq7z0BHeT37EWjVYpJvnp5lXZBxaX9Fj8W4dcYl8Nlvw6dginM5vWMyb81kaoy/70k9ohbEUu/FSooUBynrsFedQpoxh2NXvhw1rvV/sESVdLLbGXYEiSj98hOHteYoO/sndI3+isbI4q9YX9WI+dpyFMdTBRyWNhbiLYUpQUcpY5+oO+5O+++x36CvFhvEPluD33L7haLBizyMrkCTcIM2Ep6ODzLVyobK+iCXFdFb+FUVVyTy+uH/ACWdlTa+REe6SfZII9x3qyfC1pra8us2XXu8Y7YJTzXqtvslwyjdVrTMcc9tlbaVJU46pBTy7b7b+ZFQvqFn8zUXK2r5cLJj9meRGTGEaxw0xGVBKlHmKATuo8xBPkB5VsGn2tuQ6fYbPxFNhxvIrBNlonqtt/iKfbbko2CXUFK0kK9lPjt0+nfvcpzrxHhnCpwjPL6GW4j9PY+D6vPy7LjTuPY5dlOO2qBIXs6lLRDbqi0SVNILoUUBXzSNvdD1SPqtrbl2shtTmZRbL65bS8GpcGJ2Dq23FBQbWeY7pQR7P0nfcneo4q9KkoJT6lLXFzbj0FKUrocxSlKAUpSgFKUoBSlKAUpSgJr4VMHxrPuJCBacrhN3C3xoUieLe6fYluNpHK2ofOTurmI8eXr03FZDN9QntRNIskRcdBbTBftM4CNkmPW8wm7SlKgDHkbJIXuPZ9ojqoHbcCoXx3Ir5iWUQ8jxu6SLZdITnaR5UdWym1bbfQQQSCDuCCQRW+Z7xCas6k4x+DmVZMl21qcS87FiRGoqX1g7hTnZpBWQeux6b7HboKzzqk7N3lx9jTC2KhtfX+yf7nIxvR4aPYPjul2K5HCy23xZV2uF1twlyLgt9aErQ24filIWSANwBy9AN9/bhWBab4Fxh6yWqTjUC841j9gN0at8xhMkMJ/enlto5weqQpaR47bDeq8YhxG6wYPiEfGcfylCbdEChDRLhMyVwwd9wytxJKB1PTfYeFa5ZNUs4sF3yW6wr0p2dksN6DdpMttL7klt07r3Ku5RPzh1HhXHu1mGs/z15OveIcMsVqnpHjOA8JGZ3WxRrfcLbccigXHHL0Wkre+D5DaVJbDm3MAk8ySN+uwJ7633EbTp9kuC2DC8PwvB1XFdg5rhhmXWp223Wa/ye1JZmqQVEbhRCkgjx5k7dKdvar51J0Wa0ok3gPYqy+H2objCFKbIWVgJc25gkKJPLvt1NbTbeJzWq1YvGscTLkckSL6lGmuwWHJjDO23IiQpBWAB3dd/f0qJae1xxnnIjfWnnHBKHCReLdd9Tk6SZJp1h86G03Plrm3C2pkT0uII/ei6okFKTuNuWvzw/wB7tOr3GVHeyLAsOhRGrHLZ+DLdbEtxFFvqlxTSioFz2tubyAqvmCah5XpvmwyzE57ca7Bpxjt32Uvgpc+PulYIJO3fTA9Q8q01zQZXiM1mJdAy4x2rrCXk8jnxhyqBHXauk9O25NeaKRvSUU/JlmeIWyY7bOEy23XJrPp+nLrldibJccGhFqM7ESP3wLcAAV033Hny7dQqvRl+GY7+6K4c41vxW2fB12tEJyY0xCR2MxXRTinABs4eUgknfoetVke1My+TpEjTOVOYfxxqcbgxHdjIUth4kkltzbmQCVK3SDt7SvOttxbiY1ow3Co2K2LLg3b4jZaiesQ2X3YqD81txaSoAeA67dw6VTu9kY4T9f5L9vW5ZfyJqxDCMKd4odesgexS13kYczKm2bH1MAxlujm2/ekjYhJQEhO2wK+7faoiznUJ7NtObBls3RSz2mfBuYJya1QFRbdcEJJIiuNBPIs7pHz99kqG3U1H+K6jZvhWerzTGsimQ744panphIdMjnPMsOhYIcCj1IUD1699ZjUTWvUnVSHDg5nkAlQYay4xBjR24zCFkEFfI2ACrYkbnfbc7bbmrxpkppvlcepR3RceOCyF/wBSrZC4NMc1XZ0h0xF6vF6kWx9g2JPq6G0l4BSE83MFfvaepUR39KjCRY7In0acbIRaLem8fhgqObiY6e37MIPsFzbm5fdvtUTzNQ8qn6S23TWTNZVjlumLnxowYQFpeXzcxLm3MR7auhO3WitRMqXpAjTFU1k42iebmmN6ujn7cjbm7Tbm2693dSOncenrn7B3p9fQt1dxiumWs+meiVk0oxS949kEGGq43C424SZdwU+Slx1Lx7uTbn6dBv8ANAFYjTLDtNcE4hdd4F6x6DfsXxa3+sNsTWEyVMshzmcSgqBPMlKlI3HU8vfvUG45xMa0Yrh8XGrPlwTDhtFiG5JhMvvxGyNuVp1aSpIA6AbnYbAdAK0+xaj5fjzGUtW66cxymGuDd3ZLYecktrUVK9pW5CiVE8w69aotNPDTf89eepfvEMpli9X9IbFppwjXwwI0C4MyMwjybJfUtJW8/bXo4W0ntduYgdQRvsSnfxqpVbrcNWc7uujkHS643hMjGYDyX40ZbCC42UlRSA5tzco51bJ32G+3gK0qtFEJQTU3kz3TjJraKUpXY4ilKUApSlAKUpQClKUApSlAKUpQClKVIFKUqAKUpQClKUApSlSBSlKAUpSoApSlAKUpQClKUApSlAKUpQClKUApSlAKUpQClKUApSlAKUpQClKUApTwpQClKUApSlAKUpQClKUApSlAKUpQH//Z";
+
 // ================================================================
 // UTILITIES
 // ================================================================
@@ -37,6 +40,18 @@ const formatDate = (d) => {
 
 const round2 = (n) =>
   Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+const formatPhone = (phone) => {
+  if (!phone) return "";
+  const digits = String(phone).replace(/\D/g, "");
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  if (digits.length === 11 && digits[0] === "1") {
+    return `(${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+  }
+  return phone;
+};
 
 const statusColor = (s) => {
   const v = (s || "").toLowerCase();
@@ -242,16 +257,9 @@ function generateProposalHTML({ estimate, client, settings }) {
 
   const timeline = getTimeline();
 
-  const logoSVG = `
-    <svg width="50" height="58" viewBox="0 0 50 58" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <polygon points="25,2 48,14.5 48,43.5 25,56 2,43.5 2,14.5"
-        fill="rgba(245,240,232,0.05)" stroke="#f5f0e8" stroke-width="2"/>
-      <text x="25" y="43"
-        font-family="'Times New Roman',Times,serif"
-        font-size="34" font-weight="700"
-        fill="#f5f0e8" text-anchor="middle">N</text>
-      <polygon points="30,13 21,45 25,45 34,13" fill="#c45c26" opacity="0.95"/>
-    </svg>`;
+  const logoImg = `<img src="data:image/jpeg;base64,${LOGO_BASE64}"
+    alt="Northshore Mechanical & Construction"
+    style="height:78px;width:auto;display:block;border-radius:6px;" />`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -274,7 +282,7 @@ function generateProposalHTML({ estimate, client, settings }) {
     .logo-row { display: flex; align-items: center; gap: 14px; }
     .co-name { font-family: Arial, Helvetica, sans-serif; font-size: 19px; font-weight: 700; letter-spacing: 3px; color: #f5f0e8; }
     .co-sub { font-family: Arial, sans-serif; font-size: 8.5px; letter-spacing: 4px; color: #c45c26; margin-top: 3px; text-transform: uppercase; }
-    .co-contact { font-family: Arial, sans-serif; font-size: 9.5px; color: #8a9aaa; margin-top: 9px; line-height: 1.9; }
+    .co-contact { font-family: Arial, sans-serif; font-size: 10px; color: #8a9aaa; line-height: 2; }
     .prop-meta { text-align: right; }
     .prop-title { font-family: Arial, sans-serif; font-size: 24px; font-weight: 700; letter-spacing: 5px; color: #f5f0e8; }
     .prop-num { font-family: Arial, sans-serif; font-size: 11px; color: #c45c26; margin-top: 5px; letter-spacing: 1px; }
@@ -374,13 +382,11 @@ function generateProposalHTML({ estimate, client, settings }) {
 
 <div class="header">
   <div class="logo-row">
-    ${logoSVG}
+    ${logoImg}
     <div>
-      <div class="co-name">NORTHSHORE</div>
-      <div class="co-sub">Mechanical &amp; Construction</div>
       <div class="co-contact">
-        ${co.phone} &nbsp;|&nbsp; ${co.email}<br>
-        ${co.address}<br>
+        ${formatPhone(co.phone)} &nbsp;|&nbsp; ${co.email}<br>
+        ${co.address} &nbsp;|&nbsp; ${co.website}<br>
         MI Residential Builder License #${co.license}
       </div>
     </div>
@@ -402,7 +408,7 @@ function generateProposalHTML({ estimate, client, settings }) {
         <div class="lbl">Prepared For</div>
         <div class="info-name">${clientName}</div>
         <div class="info-detail">
-          ${client && client.phone ? client.phone + "<br>" : ""}
+          ${client && client.phone ? formatPhone(client.phone) + "<br>" : ""}
           ${client && client.email ? client.email : ""}
         </div>
       </div>
@@ -525,7 +531,6 @@ function generateProposalHTML({ estimate, client, settings }) {
         <span class="cred">Journeyman Boilermaker</span>
         <span class="cred">MI Residential Builder #${co.license}</span>
         <span class="cred">EPRI Certified Rigger</span>
-        <span class="cred">Fully Insured</span>
       </div>
     </div>
   </div>
@@ -544,9 +549,7 @@ function generateProposalHTML({ estimate, client, settings }) {
       A written change order will be issued before any additional work proceeds.</p>
 
       <p>Building permits are the responsibility of the homeowner unless otherwise agreed in writing.
-      All work performed in compliance with applicable Michigan Building Codes and local ordinances.
-      Northshore Mechanical &amp; Construction LLC carries general liability insurance; certificate
-      available upon request.</p>
+      All work performed in compliance with applicable Michigan Building Codes and local ordinances.</p>
 
       <p>A finance charge of 1.5% per month may be applied to balances outstanding beyond 30 days
       of the due date. Northshore Mechanical &amp; Construction LLC reserves the right to suspend
@@ -608,7 +611,7 @@ function generateProposalHTML({ estimate, client, settings }) {
 <div class="foot">
   <div>
     Northshore Mechanical &amp; Construction LLC &nbsp;|&nbsp; ${co.address}<br>
-    ${co.phone} &nbsp;|&nbsp; ${co.email} &nbsp;|&nbsp; ${co.website}
+    ${formatPhone(co.phone)} &nbsp;|&nbsp; ${co.email} &nbsp;|&nbsp; ${co.website}
   </div>
   <div class="foot-r">
     Michigan Residential Builder<br>
@@ -699,11 +702,12 @@ function generateChangeOrderHTML({ job, client, coData, settings, originalTotal 
 </div>
 
 <div class="header">
-  <div>
-    <div class="co-name">NORTHSHORE</div>
-    <div class="co-sub">Mechanical &amp; Construction</div>
+  <div style="display:flex;align-items:center;gap:14px;">
+    <img src="data:image/jpeg;base64,${LOGO_BASE64}"
+      alt="Northshore"
+      style="height:64px;width:auto;display:block;border-radius:5px;" />
     <div class="co-contact">
-      ${co.phone} &nbsp;|&nbsp; ${co.email}<br>
+      ${formatPhone(co.phone)} &nbsp;|&nbsp; ${co.email}<br>
       ${co.address}<br>
       MI Residential Builder License #${co.license}
     </div>
@@ -765,7 +769,7 @@ function generateChangeOrderHTML({ job, client, coData, settings, originalTotal 
 </div>
 
 <div class="foot">
-  <div>Northshore Mechanical &amp; Construction LLC &nbsp;|&nbsp; ${co.address} &nbsp;|&nbsp; ${co.phone}</div>
+  <div>Northshore Mechanical &amp; Construction LLC &nbsp;|&nbsp; ${co.address} &nbsp;|&nbsp; ${formatPhone(co.phone)}</div>
   <div>License #${co.license} &nbsp;|&nbsp; ${coNum}</div>
 </div>
 
@@ -1199,6 +1203,15 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
   };
 
   const handleGenerateProposal = (est) => {
+    if (!est.grand_total || Number(est.grand_total) === 0) {
+      alert("This estimate has $0 total. Add materials and labor before generating a proposal.");
+      return;
+    }
+    if (!est.scope_of_work || !est.scope_of_work.trim()) {
+      if (!window.confirm("This estimate has no scope of work. Generating a proposal without scope is not recommended. Continue anyway?")) {
+        return;
+      }
+    }
     const client = clients.find((c) => c.id === est.client_id) || null;
     openProposal(est, client, settings);
   };
@@ -1327,16 +1340,45 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
             </div>
           </div>
           <div className="mb-3">
-            <label className="block text-xs text-slate-400 mb-1">
-              Scope of Work (client-facing)
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs text-slate-400">
+                Scope of Work (client-facing)
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  if (scopeOfWork.trim() && !window.confirm("This will replace your current scope. Continue?")) return;
+                  setScopeOfWork(
+                    "PROJECT OVERVIEW:\n" +
+                    "Brief description of what we're building or improving for the client.\n\n" +
+                    "WORK TO BE PERFORMED:\n" +
+                    "• Demo and site preparation\n" +
+                    "• Specific work item #1\n" +
+                    "• Specific work item #2\n" +
+                    "• Cleanup and final walkthrough\n\n" +
+                    "MATERIALS & FINISHES:\n" +
+                    "Standard-grade materials sourced from approved suppliers. " +
+                    "Specific finish selections to be confirmed with client prior to ordering.\n\n" +
+                    "NOTES:\n" +
+                    "All work performed per Michigan Residential Building Code. " +
+                    "Permits pulled by Northshore where required."
+                  );
+                }}
+                className="text-xs text-amber-400 hover:text-amber-300 underline"
+              >
+                Use Template
+              </button>
+            </div>
             <textarea
               value={scopeOfWork}
               onChange={(e) => setScopeOfWork(e.target.value)}
-              rows={3}
-              placeholder="Describe the project in plain language for the client..."
+              rows={6}
+              placeholder="Click 'Use Template' for a structured starting point, or write your own scope. Be specific — homeowners trust contractors who clearly describe what they're doing."
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
             />
+            <p className="text-xs text-slate-600 mt-1">
+              Tip: A clear scope is the #1 reason proposals get accepted. Take an extra 2 minutes here.
+            </p>
           </div>
           <div>
             <label className="block text-xs text-slate-400 mb-1">Exclusions</label>
@@ -1628,10 +1670,17 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
                 Saved Estimates ({savedEstimates.length})
               </p>
               <div className="space-y-2 max-h-72 overflow-y-auto">
-                {savedEstimates.map((e) => (
+                {savedEstimates.map((e) => {
+                  const estClient = clients.find((c) => c.id === e.client_id);
+                  return (
                   <div key={e.id} className="text-xs py-1.5 border-b border-slate-800 last:border-0">
                     <div className="flex justify-between items-center">
-                      <p className="text-slate-300 truncate mr-2">{e.name}</p>
+                      <div className="min-w-0 mr-2">
+                        <p className="text-slate-300 truncate">{e.name}</p>
+                        {estClient && (
+                          <p className="text-slate-600 text-[10px] truncate">{estClient.name}</p>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         <span className="text-amber-400 font-medium">{currency(e.grand_total)}</span>
                         <Badge
@@ -1651,7 +1700,8 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
                       📄 Generate Proposal
                     </Btn>
                   </div>
-                ))}
+                  );
+                })}
                 {savedEstimates.length === 0 && (
                   <p className="text-slate-600 text-xs">No saved estimates</p>
                 )}
@@ -2091,7 +2141,7 @@ function Clients({ jobs, estimates }) {
                           </td>
                           <td className="py-3 px-4 text-slate-400 text-xs">
                             {c.email && <p>{c.email}</p>}
-                            {c.phone && <p>{c.phone}</p>}
+                            {c.phone && <p>{formatPhone(c.phone)}</p>}
                           </td>
                           <td className="py-3 px-4">
                             <select
