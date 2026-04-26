@@ -12,14 +12,14 @@ import {
   Plus, Trash2, Pencil, Copy, Check, ChevronRight, ChevronDown, Save, Search, Filter,
   // Files & docs
   FileText, FileEdit, Download, Upload, Camera, Image as ImageIcon,
-  FolderOpen, Folder, Archive, FileBox, FileCheck2, Share2, History,
+  FolderOpen, Folder, Archive, Share2, History,
   // Status & flags
   AlertCircle, AlertTriangle, CheckCircle2, XCircle, Info, Clock, Zap, Lock, Unlock,
   // Construction
   HardHat, Hammer, Wrench, Truck, Package,
   // Money & data
   DollarSign, TrendingUp, TrendingDown, BarChart3, PieChart, Receipt,
-  ShieldCheck, IdCard, Stamp, BookOpen,
+  ShieldCheck, BookOpen,
   // Misc
   ExternalLink, Eye, EyeOff, ArrowRight, ArrowLeft, RefreshCw, MoreHorizontal,
   CloudSun, Thermometer, MapPin, Phone, Mail, Building2
@@ -2093,13 +2093,13 @@ function ManualTimeEntryModal({ isOpen, jobId, jobName, existingEntry, onClose, 
 const DOC_CATEGORIES = [
   { id: "Articles",  label: "Articles of Org", icon: BookOpen,    color: "text-purple-400",  bg: "bg-purple-900/20",  border: "border-purple-700/40" },
   { id: "Insurance", label: "Insurance",       icon: ShieldCheck, color: "text-emerald-400", bg: "bg-emerald-900/20", border: "border-emerald-700/40" },
-  { id: "License",   label: "Licenses",        icon: Stamp,       color: "text-amber-400",   bg: "bg-amber-900/20",   border: "border-amber-700/40" },
+  { id: "License",   label: "Licenses",        icon: HardHat,     color: "text-amber-400",   bg: "bg-amber-900/20",   border: "border-amber-700/40" },
   { id: "Vehicle",   label: "Vehicles",        icon: Truck,       color: "text-blue-400",    bg: "bg-blue-900/20",    border: "border-blue-700/40" },
   { id: "Tax",       label: "Tax",             icon: DollarSign,  color: "text-rose-400",    bg: "bg-rose-900/20",    border: "border-rose-700/40" },
-  { id: "Employee",  label: "Employee / IDs",  icon: IdCard,      color: "text-cyan-400",    bg: "bg-cyan-900/20",    border: "border-cyan-700/40" },
-  { id: "Permit",    label: "Permits",         icon: FileCheck2,  color: "text-orange-400",  bg: "bg-orange-900/20",  border: "border-orange-700/40" },
+  { id: "Employee",  label: "Employee / IDs",  icon: Users,       color: "text-cyan-400",    bg: "bg-cyan-900/20",    border: "border-cyan-700/40" },
+  { id: "Permit",    label: "Permits",         icon: FileText,    color: "text-orange-400",  bg: "bg-orange-900/20",  border: "border-orange-700/40" },
   { id: "Receipt",   label: "Receipts",        icon: Receipt,     color: "text-yellow-400",  bg: "bg-yellow-900/20",  border: "border-yellow-700/40" },
-  { id: "Other",     label: "Other",           icon: FileBox,     color: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700" },
+  { id: "Other",     label: "Other",           icon: Package,     color: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700" },
 ];
 
 const getCategoryMeta = (id) =>
