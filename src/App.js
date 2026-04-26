@@ -136,8 +136,7 @@ function CountUp({ value, prefix = "", duration = 0.8, format = (v) => v.toLocal
 
     rafRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, duration]);
+  }, [value, duration]); // intentionally omitting `display` — startValue captured once per value change
 
   return <span>{prefix}{format(display)}</span>;
 }
