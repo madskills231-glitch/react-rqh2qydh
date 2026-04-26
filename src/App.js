@@ -2156,9 +2156,132 @@ function EmptyState({ icon, message, action, actionLabel }) {
 }
 
 // ================================================================
+// CLIENT QUICK-ADD MODAL
+// Inline client creation from anywhere — no need to leave current tab.
+// Currently used by Estimator to add a client mid-estimate without
+// losing form state.
+// ================================================================
+function ClientQuickAddModal({ isOpen, onClose, onClientAdded }) {
+  const toast = useToast();
+  const [name, setName]   = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const reset = () => {
+    setName(""); setEmail(""); setPhone(""); setSaving(false);
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) {
+      toast.error("Client name is required");
+      return;
+    }
+    setSaving(true);
+    const { data, error } = await supabase
+      .from("clients")
+      .insert({ name, email, phone })
+      .select()
+      .single();
+    if (!error && data) {
+      onClientAdded(data);
+      reset();
+    } else {
+      toast.error("Add failed: " + (error?.message || "Unknown error"));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={() => { reset(); onClose(); }}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Plus className="w-5 h-5 text-amber-400" />
+              Quick Add Client
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Just the basics — full address &amp; notes can be added later in the Clients tab.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Name *</label>
+                <Inp
+                  placeholder="Full name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && name.trim() && handleSave()}
+                  autoFocus
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Email</label>
+                  <Inp
+                    placeholder="optional"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Phone</label>
+                  <Inp
+                    placeholder="optional"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end mt-5">
+              <button
+                onClick={() => { reset(); onClose(); }}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving || !name.trim()}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {saving ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Saving...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="w-4 h-4" /> Add &amp; Select
+                  </>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
 // ESTIMATOR
 // ================================================================
-function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, jobs }) {
+function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, setClients, jobs }) {
   const toast    = useToast();
   const confirm  = useConfirm();
   const [tab, setTab]                     = useState("Materials");
@@ -2185,6 +2308,7 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
   const [editingId, setEditingId]         = useState(null);   // null = new, id = editing existing
   const [estFilter, setEstFilter]         = useState("All");  // saved-list filter
   const [estSearch, setEstSearch]         = useState("");     // saved-list search
+  const [showClientAddModal, setShowClientAddModal] = useState(false); // quick-add client modal
 
   // Material form
   const [mName, setMName] = useState("");
@@ -2414,6 +2538,15 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
     }
   };
 
+  // Quick-add client from inside the estimator. Auto-selects the new client
+  // so the in-progress estimate stays linked to it.
+  const handleClientAdded = (newClient) => {
+    setClients((prev) => [newClient, ...prev]);
+    setSelectedClientId(newClient.id);
+    setShowClientAddModal(false);
+    toast.success(`Client "${newClient.name}" added and selected`);
+  };
+
 
   const handleGenerateProposal = async (est) => {
     if (!est.grand_total || Number(est.grand_total) === 0) {
@@ -2577,7 +2710,17 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Client</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs text-slate-400">Client</label>
+                <button
+                  type="button"
+                  onClick={() => setShowClientAddModal(true)}
+                  className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 transition-colors"
+                  title="Add a new client without leaving this estimate"
+                >
+                  <Plus className="w-3 h-3" /> New Client
+                </button>
+              </div>
               <Sel value={selectedClientId} onChange={(e) => setSelectedClientId(e.target.value)}>
                 <option value="">— No client —</option>
                 {clients.map((c) => (
@@ -3125,6 +3268,14 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
           </Card>
         </div>
       </div>
+
+      {/* Quick-Add Client modal — rendered inside Estimator so closing it
+          preserves all in-flight estimate state */}
+      <ClientQuickAddModal
+        isOpen={showClientAddModal}
+        onClose={() => setShowClientAddModal(false)}
+        onClientAdded={handleClientAdded}
+      />
     </div>
   );
 }
@@ -3660,6 +3811,20 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
     toast.success("Contract signed status cleared");
   }, [confirm, updateJob, toast]);
 
+  // Smart status-change handler — warns if the status change makes the job
+  // disappear from the current filter view (the "where did my job go?" footgun)
+  const handleStatusChange = useCallback(async (job, newStatus) => {
+    await updateJob(job.id, { status: newStatus });
+    if (filter !== "All" && filter !== newStatus) {
+      toast.info(
+        `"${job.name}" marked ${newStatus} — you're viewing ${filter}, so it's hidden. Click "All" to find it.`,
+        7000
+      );
+    } else {
+      toast.success(`Marked ${newStatus}`);
+    }
+  }, [updateJob, filter, toast]);
+
   const handleGenerateChangeOrder = useCallback((job) => {
     if (!coDescription.trim() || !coAmount) {
       toast.error("Description and amount are both required.");
@@ -3735,16 +3900,17 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
         </CardContent>
       </Card>
 
-      {/* FILTER + SEARCH */}
-      {jobs.length > 3 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Inp
-            placeholder="Search jobs..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="max-w-xs"
-          />
-          {["All", "Active", "Paused", "Completed", "Lost"].map((f) => (
+      {/* FILTER + SEARCH — always visible so the "where did my job go?" recovery path is never hidden */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Inp
+          placeholder="Search jobs..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        {["All", "Active", "Paused", "Completed", "Lost"].map((f) => {
+          const count = f === "All" ? jobs.length : jobs.filter((j) => j.status === f).length;
+          return (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -3754,11 +3920,11 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                   : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
               }`}
             >
-              {f}
+              {f} <span className={filter === f ? "opacity-70" : "opacity-50"}>({count})</span>
             </button>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
 
       {/* JOB LIST */}
       {filteredJobs.length === 0 ? (
@@ -3851,7 +4017,7 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                               <label className="text-xs text-slate-500 uppercase tracking-wider">Status</label>
                               <Sel
                                 value={j.status}
-                                onChange={(e) => updateJob(j.id, { status: e.target.value })}
+                                onChange={(e) => handleStatusChange(j, e.target.value)}
                                 className="mt-1"
                               >
                                 <option>Active</option>
@@ -5402,6 +5568,7 @@ function AppInner() {
                 setEstimates={setEstimates}
                 onJobCreated={onJobCreated}
                 clients={clients}
+                setClients={setClients}
                 jobs={jobs}
               />
             )}
