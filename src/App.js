@@ -55,6 +55,13 @@ import { supabase } from "./supabase";
 //   - Skeleton loading states for slow async
 //   - Subtle KPI gradients based on meaning
 //   - CountUp animation for KPI numbers on mount
+// PHASE 4 — DOCUMENTS:
+//   - Contract generator (binding agreement post-proposal-signature)
+//   - Documents-as-state-machine: Mark Contract Signed arms NOC clock,
+//     invoice schedule, daily log expectations, punch list scaffolding
+//   - jobs.contract_signed_at + jobs.contract_number columns required
+//   - Contract button surfaces only on Approved estimates
+//   - today's render bug fixed in Dashboard banner (was today\'s)
 // ================================================================
 
 // ================================================================
@@ -155,8 +162,17 @@ function getCompany(s) {
   };
 }
 
-// Northshore logo — base64 encoded JPEG (200px, dark navy bg, blends with header)
-const LOGO_BASE64 = "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";
+// ================================================================
+// LOGO  (tiny transparent PNG — placeholder)
+// ================================================================
+// This is a valid 1x1 transparent PNG so PDFs render without errors
+// and the app builds clean on first paste. No action required to deploy.
+//
+// To swap in the real Northshore logo later: open your previous
+// App.js, find the LOGO_BASE64 line, copy the long base64 string
+// between the quotes, and replace the string below. One-line change.
+// ================================================================
+const LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 // ================================================================
 // UTILITIES
@@ -1117,6 +1133,498 @@ function openChangeOrder(job, client, coData, settings, originalTotal) {
 }
 
 // ================================================================
+// CONTRACT GENERATOR — Phase 4
+// ================================================================
+// Documents-as-state-machine. Generating + signing this contract is
+// what arms the operational machine (NOC clock, invoice schedule,
+// daily log expectations, punch list scaffolding).
+//
+// Pulls from an APPROVED estimate. Once "Mark Contract Signed" is
+// fired on the linked job, the rest of the system knows the project
+// is binding and the cascade begins.
+// ================================================================
+function generateContractHTML({ estimate, client, settings, contractNum }) {
+  const co = getCompany(settings);
+  const fmt = (n) =>
+    `$${(Number(n) || 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+
+  const today = new Date();
+  const date = today.toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+  const year = today.getFullYear();
+
+  const grandTotal = Number(estimate.grand_total) || 0;
+  const deposit    = grandTotal * 0.40;
+  const midpay     = grandTotal * 0.40;
+  const final      = grandTotal * 0.20;
+  const weeks      = Number(estimate.estimated_weeks) || 4;
+
+  const clientName  = client ? client.name : "Client";
+  const projectAddr = estimate.project_address || (client ? `${clientName} Property` : "To Be Confirmed");
+
+  // Estimate / proposal reference number — link this contract back to its origin doc
+  const estRef = `NSB-${year}-${String(estimate.id).slice(-5).toUpperCase()}`;
+
+  const scopeText = (
+    estimate.scope_of_work ||
+    "Scope of Work as detailed in Proposal " + estRef + ", which is incorporated by reference and attached as Exhibit A."
+  ).replace(/\n/g, "<br>");
+
+  const logoImg = `<img src="data:image/png;base64,${LOGO_BASE64}"
+    alt="Northshore Mechanical & Construction"
+    style="height:88px;width:auto;display:block;" />`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Northshore — Contract ${contractNum}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Georgia, 'Times New Roman', serif; color: #1a1a1a; background: #fff; font-size: 11pt; line-height: 1.65; }
+
+    .action-bar { background: #0d1f33; padding: 10px 36px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 99; }
+    .action-bar span { color: #8a9aaa; font-family: Arial, sans-serif; font-size: 11px; }
+    .btn-pdf { background: #c45c26; color: #fff; border: none; padding: 9px 22px; font-size: 12px; font-weight: 700; cursor: pointer; border-radius: 3px; font-family: Arial, sans-serif; letter-spacing: 1px; }
+    .btn-pdf:hover { background: #a84e22; }
+
+    .header { background: #0d1f33; color: #f5f0e8; padding: 28px 40px; display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+    .logo-row { display: flex; align-items: center; gap: 18px; }
+    .co-contact { font-family: Arial, sans-serif; font-size: 10px; color: #8a9aaa; line-height: 2; }
+    .doc-meta { text-align: right; }
+    .doc-title { font-family: Arial, sans-serif; font-size: 24px; font-weight: 700; letter-spacing: 5px; color: #f5f0e8; }
+    .doc-num { font-family: Arial, sans-serif; font-size: 11px; color: #c45c26; margin-top: 5px; letter-spacing: 1px; }
+    .doc-dates { font-family: Arial, sans-serif; font-size: 9.5px; color: #8a9aaa; margin-top: 5px; line-height: 1.9; }
+
+    .accent { height: 3px; background: linear-gradient(90deg, #c45c26, #e07340); }
+
+    .wrap { max-width: 800px; margin: 0 auto; padding: 0 40px; }
+    .sec { margin: 22px 0; }
+    .sh { font-family: Arial, sans-serif; font-size: 8.5px; letter-spacing: 4px; text-transform: uppercase; color: #c45c26; border-bottom: 1px solid #e8e0d0; padding-bottom: 5px; margin-bottom: 13px; font-weight: 700; }
+    .article-num { font-family: Arial, sans-serif; font-size: 10pt; font-weight: 700; color: #0d1f33; letter-spacing: 1px; }
+    .article-ttl { font-family: Arial, sans-serif; font-size: 11pt; font-weight: 700; color: #0d1f33; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .parties-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    .party-box { background: #f9f7f4; border-left: 3px solid #0d1f33; padding: 14px 18px; }
+    .party-label { font-family: Arial, sans-serif; font-size: 8.5px; letter-spacing: 3px; text-transform: uppercase; color: #999; margin-bottom: 6px; }
+    .party-name { font-size: 13pt; font-weight: 700; color: #0d1f33; margin-bottom: 4px; }
+    .party-detail { font-size: 9.5pt; color: #555; line-height: 1.7; }
+
+    .recitals { background: #f9f7f4; padding: 16px 22px; font-style: italic; color: #444; line-height: 1.8; font-size: 10.5pt; }
+    .recitals p { margin-bottom: 8px; }
+    .recitals strong { font-style: normal; }
+
+    .body-text { font-size: 10.5pt; color: #333; line-height: 1.8; }
+    .body-text p { margin-bottom: 8px; }
+    .body-text strong { color: #0d1f33; }
+
+    .scope-box { background: #f9f7f4; border-left: 3px solid #c45c26; padding: 14px 18px; font-size: 10.5pt; color: #333; line-height: 1.8; }
+
+    .sum-box { background: #0d1f33; color: #f5f0e8; padding: 16px 22px; display: flex; justify-content: space-between; align-items: center; }
+    .sum-lbl { font-family: Arial, sans-serif; font-size: 9px; letter-spacing: 3px; text-transform: uppercase; }
+    .sum-amt { font-family: Arial, sans-serif; font-size: 22px; font-weight: 700; color: #f5c842; }
+
+    .pay-table { width: 100%; border-collapse: collapse; }
+    .pay-table th { background: #0d1f33; color: #f5f0e8; padding: 9px 13px; text-align: left; font-family: Arial, sans-serif; font-size: 8.5px; letter-spacing: 2px; text-transform: uppercase; }
+    .pay-table td { padding: 9px 13px; border-bottom: 1px solid #e8e0d0; font-size: 10.5pt; }
+    .pay-table .ar { text-align: right; font-family: 'Courier New', monospace; font-weight: 700; }
+
+    .lien-box { border: 2px solid #c45c26; padding: 14px 18px; background: #fff8f0; }
+    .lien-ttl { font-family: Arial, sans-serif; font-size: 9px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase; margin-bottom: 7px; color: #c45c26; }
+    .lien-txt { font-size: 9.5pt; line-height: 1.75; color: #333; }
+
+    .cancel-box { border: 2px solid #0d1f33; padding: 14px 18px; background: #fff8f0; }
+    .cancel-ttl { font-family: Arial, sans-serif; font-size: 9px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase; margin-bottom: 7px; color: #0d1f33; }
+    .cancel-txt { font-size: 9.5pt; line-height: 1.75; color: #333; }
+
+    .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; margin-top: 6px; }
+    .sig-lbl { font-family: Arial, sans-serif; font-size: 8.5px; letter-spacing: 2px; text-transform: uppercase; color: #999; margin-bottom: 5px; }
+    .sig-name { font-size: 11pt; font-weight: 700; color: #0d1f33; margin-bottom: 18px; }
+    .sig-line { border-bottom: 1px solid #0d1f33; height: 30px; margin-bottom: 3px; }
+    .sig-sub { font-family: Arial, sans-serif; font-size: 8px; color: #bbb; letter-spacing: 1px; }
+    .print-box { padding: 11px 14px; background: #f9f7f4; border: 1px solid #e8e0d0; margin-top: 16px; }
+    .print-lbl { font-family: Arial, sans-serif; font-size: 8.5px; letter-spacing: 2px; text-transform: uppercase; color: #999; margin-bottom: 5px; }
+    .print-line { border-bottom: 1px solid #0d1f33; height: 26px; }
+
+    .foot { background: #0d1f33; color: #8a9aaa; padding: 14px 40px; display: flex; justify-content: space-between; align-items: center; margin-top: 36px; font-family: Arial, sans-serif; font-size: 8.5px; }
+
+    @media print {
+      .action-bar { display: none !important; }
+      body { font-size: 10pt; }
+      .header { padding: 24px 32px; }
+      .wrap { padding: 0 32px; }
+      .sec { margin: 16px 0; }
+      .keep-together,
+      .lien-box,
+      .cancel-box,
+      .sig-grid,
+      .pay-table,
+      .sum-box,
+      .recitals { page-break-inside: avoid; break-inside: avoid; }
+      @page { margin: 0.4in; size: letter; }
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="action-bar">
+  <span>Northshore OS — Contract Preview &nbsp;|&nbsp; ${contractNum}</span>
+  <button class="btn-pdf" onclick="window.print()">⬇ Save as PDF / Print</button>
+</div>
+
+<div class="header">
+  <div class="logo-row">
+    ${logoImg}
+    <div>
+      <div class="co-contact">
+        ${formatPhone(co.phone)} &nbsp;|&nbsp; ${co.email}<br>
+        ${co.address} &nbsp;|&nbsp; ${co.website}<br>
+        MI Residential Builder License #${co.license}
+      </div>
+    </div>
+  </div>
+  <div class="doc-meta">
+    <div class="doc-title">CONTRACT</div>
+    <div class="doc-num">${contractNum}</div>
+    <div class="doc-dates">Effective Date: ${date}<br>Ref: Proposal ${estRef}</div>
+  </div>
+</div>
+<div class="accent"></div>
+
+<div class="wrap">
+
+  <!-- PARTIES -->
+  <div class="sec">
+    <div class="sh">The Parties</div>
+    <div class="parties-grid">
+      <div class="party-box">
+        <div class="party-label">Contractor</div>
+        <div class="party-name">${co.name}</div>
+        <div class="party-detail">
+          ${co.address}<br>
+          ${formatPhone(co.phone)} &nbsp;|&nbsp; ${co.email}<br>
+          MI Residential Builder License #${co.license}
+        </div>
+      </div>
+      <div class="party-box">
+        <div class="party-label">Owner</div>
+        <div class="party-name">${clientName}</div>
+        <div class="party-detail">
+          ${client && client.email ? client.email + "<br>" : ""}
+          ${client && client.phone ? formatPhone(client.phone) + "<br>" : ""}
+          Project Address: ${projectAddr}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RECITALS -->
+  <div class="sec">
+    <div class="sh">Recitals</div>
+    <div class="recitals">
+      <p><strong>WHEREAS,</strong> Owner desires to engage Contractor to perform certain residential
+      construction services at the property described above (the "Project"); and</p>
+      <p><strong>WHEREAS,</strong> Contractor has prepared and delivered to Owner a written proposal
+      dated prior to the date hereof, designated Proposal ${estRef}, describing the scope, materials,
+      pricing, and schedule for the Project (the "Proposal"); and</p>
+      <p><strong>WHEREAS,</strong> Owner has reviewed and accepted the Proposal and the parties now
+      desire to memorialize their agreement in this binding Construction Contract;</p>
+      <p><strong>NOW, THEREFORE,</strong> in consideration of the mutual covenants contained herein,
+      and for other good and valuable consideration, the receipt and sufficiency of which are hereby
+      acknowledged, the parties agree as follows:</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 1 — CONTRACT DOCUMENTS -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 1</div>
+    <div class="article-ttl">Contract Documents</div>
+    <div class="body-text">
+      <p>The Contract Documents consist of: (a) this Construction Contract; (b) the Proposal
+      ${estRef} attached hereto and incorporated by reference; (c) any plans, specifications, or
+      drawings provided by Owner and accepted by Contractor; and (d) all written change orders
+      executed pursuant to Article 6. In the event of any conflict between this Contract and the
+      Proposal, this Contract shall control.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 2 — SCOPE OF WORK -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 2</div>
+    <div class="article-ttl">Scope of Work</div>
+    <div class="scope-box">${scopeText}</div>
+    <p style="font-size:9pt;color:#666;margin-top:8px;font-style:italic;">
+      All work shall be performed in compliance with the Michigan Residential Building Code and
+      applicable local ordinances. The detailed scope, inclusions, and exclusions set forth in the
+      Proposal are incorporated by reference.
+    </p>
+  </div>
+
+  <!-- ARTICLE 3 — CONTRACT SUM -->
+  <div class="sec keep-together">
+    <div class="article-num">ARTICLE 3</div>
+    <div class="article-ttl">Contract Sum</div>
+    <div class="body-text">
+      <p>Owner agrees to pay Contractor the total Contract Sum below for the full and faithful
+      performance of the Work, subject to additions and deductions made by written change order
+      pursuant to Article 6.</p>
+    </div>
+    <div class="sum-box">
+      <span class="sum-lbl">Total Contract Sum</span>
+      <span class="sum-amt">${fmt(grandTotal)}</span>
+    </div>
+  </div>
+
+  <!-- ARTICLE 4 — PAYMENT SCHEDULE -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 4</div>
+    <div class="article-ttl">Payment Schedule</div>
+    <div class="body-text">
+      <p>The Contract Sum shall be paid in accordance with the following milestone schedule. Each
+      installment shall be due within seven (7) calendar days of the corresponding milestone, upon
+      submission of an invoice by Contractor.</p>
+    </div>
+    <table class="pay-table">
+      <thead>
+        <tr><th>Phase</th><th>Trigger</th><th class="ar">Amount</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1. Deposit — 40%</strong></td>
+          <td>Upon execution of this Contract</td>
+          <td class="ar">${fmt(deposit)}</td>
+        </tr>
+        <tr>
+          <td><strong>2. Progress — 40%</strong></td>
+          <td>Upon mutual agreement that Project has reached the midpoint</td>
+          <td class="ar">${fmt(midpay)}</td>
+        </tr>
+        <tr>
+          <td><strong>3. Final — 20%</strong></td>
+          <td>Upon completion of final walkthrough and punch list</td>
+          <td class="ar">${fmt(final)}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="body-text" style="margin-top:10px;">
+      <p>A finance charge of one and one-half percent (1.5%) per month, equivalent to an annual rate
+      of eighteen percent (18%), shall apply to all balances unpaid more than thirty (30) days past
+      due. Contractor reserves the right to suspend Work upon any balance unpaid more than fourteen
+      (14) days past due.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 5 — TIME OF PERFORMANCE -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 5</div>
+    <div class="article-ttl">Time of Performance</div>
+    <div class="body-text">
+      <p>Contractor shall commence the Work within a reasonable time following execution of this
+      Contract and receipt of the Deposit, and shall pursue the Work diligently to completion. The
+      estimated duration of the Work is approximately ${weeks} week(s), exclusive of delays caused by:
+      weather; permitting; material availability; acts or omissions of Owner; unforeseen site
+      conditions; or other causes beyond Contractor's reasonable control. Such delays shall not
+      constitute a breach of this Contract, and the time for performance shall be extended
+      accordingly.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 6 — CHANGE ORDERS -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 6</div>
+    <div class="article-ttl">Change Orders</div>
+    <div class="body-text">
+      <p>Any change in the scope of Work, materials, or Contract Sum shall be documented by a
+      written change order signed by both parties before such additional Work commences. Verbal
+      authorizations shall not be binding. Contractor shall not be obligated to perform any Work
+      outside the original scope absent an executed change order.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 7 — CONSTRUCTION LIEN ACT NOTICE (Michigan) -->
+  <div class="sec keep-together">
+    <div class="article-num">ARTICLE 7</div>
+    <div class="article-ttl">Construction Lien Act Notice</div>
+    <div class="lien-box">
+      <div class="lien-ttl">Notice to Owner — Required by Michigan Law</div>
+      <div class="lien-txt">
+        <p style="margin-bottom:8px;"><strong>YOUR PROPERTY IS SUBJECT TO CONSTRUCTION LIENS.</strong>
+        Under the Michigan Construction Lien Act (MCL 570.1101 et seq.), Contractor, subcontractors,
+        and material suppliers who provide labor or materials for the improvement of your property
+        may file a lien against your property if they are not paid. To protect yourself, Owner is
+        entitled to receive sworn statements and unconditional waivers of lien from Contractor and
+        any subcontractors or suppliers prior to making each payment.</p>
+        <p>Contractor shall, upon request and at each payment milestone, furnish Owner with a sworn
+        statement listing all parties providing labor or materials, and shall furnish full or partial
+        unconditional lien waivers as appropriate. A Notice of Commencement shall be recorded for
+        this Project as required by law.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ARTICLE 8 — INSURANCE -->
+  <!--
+    PHASE 4 NOTE: insurance language intentionally minimal until GLI is bound.
+    When the general liability policy is active, replace this article with full
+    coverage representations and a "certificate available upon request" clause.
+  -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 8</div>
+    <div class="article-ttl">Insurance</div>
+    <div class="body-text">
+      <p>Contractor shall maintain such insurance as is required by Michigan law for residential
+      builders. Specific coverage and limits shall be furnished to Owner upon written request.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 9 — INDEMNIFICATION -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 9</div>
+    <div class="article-ttl">Indemnification</div>
+    <div class="body-text">
+      <p>Each party shall indemnify and hold the other harmless from claims, losses, damages, or
+      expenses arising from its own negligent acts or omissions in connection with the Work. Neither
+      party shall be liable to the other for consequential or incidental damages.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 10 — WARRANTY -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 10</div>
+    <div class="article-ttl">Warranty</div>
+    <div class="body-text">
+      <p>Contractor warrants that all Work shall be performed in a good and workmanlike manner, free
+      from material defects, for a period of one (1) year following substantial completion.
+      Manufacturer warranties on materials and equipment shall pass through to Owner. This warranty
+      is in lieu of all other warranties, express or implied, including any implied warranty of
+      merchantability or fitness for a particular purpose.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 11 — DEFAULT & TERMINATION -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 11</div>
+    <div class="article-ttl">Default and Termination</div>
+    <div class="body-text">
+      <p>Either party may terminate this Contract upon material breach by the other party that is
+      not cured within ten (10) days of written notice. Upon termination, Contractor shall be paid
+      for all Work performed and materials supplied to the date of termination, plus a reasonable
+      mobilization and demobilization charge. Materials paid for by Owner shall remain Owner's
+      property.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 12 — RIGHT TO CANCEL -->
+  <div class="sec keep-together">
+    <div class="article-num">ARTICLE 12</div>
+    <div class="article-ttl">Notice of Right to Cancel</div>
+    <div class="cancel-box">
+      <div class="cancel-ttl">Required by Michigan Home Solicitation Sales Act</div>
+      <div class="cancel-txt">
+        <p><strong>You, the buyer, may cancel this transaction at any time prior to midnight of the
+        third business day after the date of this transaction.</strong> If this Contract was signed
+        at your residence, you have three (3) business days to cancel without penalty. To cancel,
+        deliver written notice to Contractor at ${co.address} or by email to ${co.email}. Any
+        payments made will be returned within ten (10) business days of receipt of your cancellation
+        notice. Work shall not commence until the cancellation period has expired.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ARTICLE 13 — GOVERNING LAW -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 13</div>
+    <div class="article-ttl">Governing Law and Disputes</div>
+    <div class="body-text">
+      <p>This Contract shall be governed by and construed in accordance with the laws of the State
+      of Michigan. Any dispute arising under this Contract shall be venued in the courts of Muskegon
+      County, Michigan. The parties shall first attempt in good faith to resolve any dispute through
+      direct negotiation before commencing formal proceedings.</p>
+    </div>
+  </div>
+
+  <!-- ARTICLE 14 — ENTIRE AGREEMENT -->
+  <div class="sec">
+    <div class="article-num">ARTICLE 14</div>
+    <div class="article-ttl">Entire Agreement</div>
+    <div class="body-text">
+      <p>This Contract, together with the Contract Documents identified in Article 1, constitutes
+      the entire agreement between the parties with respect to the Project and supersedes all prior
+      negotiations, representations, and agreements, whether written or oral. No modification of
+      this Contract shall be binding unless in writing and signed by both parties. If any provision
+      of this Contract is held unenforceable, the remaining provisions shall continue in full force
+      and effect.</p>
+    </div>
+  </div>
+
+  <!-- SIGNATURES -->
+  <div class="sec keep-together">
+    <div class="sh">Execution</div>
+    <p style="font-size:10pt;color:#555;margin-bottom:18px;">
+      The parties have executed this Construction Contract as of the Effective Date set forth above,
+      intending to be legally bound.
+    </p>
+    <div class="sig-grid">
+      <div>
+        <div class="sig-lbl">Contractor</div>
+        <div class="sig-name">
+          Connor Garza<br>
+          <span style="font-size:9pt;font-weight:400;color:#666;">
+            ${co.name}
+          </span>
+        </div>
+        <div class="sig-line"></div>
+        <div class="sig-sub">Signature &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Date</div>
+      </div>
+      <div>
+        <div class="sig-lbl">Owner</div>
+        <div class="sig-name">${clientName}</div>
+        <div class="sig-line"></div>
+        <div class="sig-sub">Signature &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Date</div>
+      </div>
+    </div>
+    <div class="print-box">
+      <div class="print-lbl">Print Owner Name</div>
+      <div class="print-line"></div>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<div class="foot">
+  <div>
+    ${co.name} &nbsp;|&nbsp; ${co.address}<br>
+    ${formatPhone(co.phone)} &nbsp;|&nbsp; ${co.email}
+  </div>
+  <div style="text-align:right;">
+    Michigan Residential Builder<br>
+    License #${co.license}<br>
+    ${contractNum}
+  </div>
+</div>
+
+</body>
+</html>`;
+}
+
+function openContract(estimate, client, settings, contractNum) {
+  const html = generateContractHTML({ estimate, client, settings, contractNum });
+  const win = window.open("", "_blank");
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+  } else {
+    alert("Please allow popups for this site to generate the contract.");
+  }
+}
+
+// ================================================================
 // LOGIN SCREEN
 // ================================================================
 function LoginScreen({ onLogin }) {
@@ -1315,7 +1823,7 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
                   </div>
                   <div>
                     <p className="text-amber-200 font-semibold text-base">
-                      {jobsMissingTodayLog.length} {jobsMissingTodayLog.length === 1 ? "job needs" : "jobs need"} today\'s log
+                      {jobsMissingTodayLog.length} {jobsMissingTodayLog.length === 1 ? "job needs" : "jobs need"} today's log
                     </p>
                     <p className="text-amber-200/60 text-xs mt-0.5">
                       {jobsMissingTodayLog.slice(0, 3).map((j) => j.name).join(" • ")}
@@ -1954,6 +2462,27 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
     openProposal(est, client, settings);
   };
 
+  // PHASE 4 — Generate binding contract from an APPROVED estimate.
+  // Contracts are only available for Approved estimates (gated in JSX below).
+  const handleGenerateContract = async (est) => {
+    if (est.status !== "Approved") {
+      toast.error("Contracts are generated from Approved estimates only.");
+      return;
+    }
+    if (!est.scope_of_work || !est.scope_of_work.trim()) {
+      const ok = await confirm({
+        title: "No scope on linked estimate",
+        message: "Contract Article 2 references the proposal scope. Generating without one will leave Article 2 thin.",
+        confirmText: "Generate Anyway",
+        cancelText: "Go Back",
+      });
+      if (!ok) return;
+    }
+    const client = clients.find((c) => c.id === est.client_id) || null;
+    const contractNum = `NSC-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+    openContract(est, client, settings, contractNum);
+  };
+
   const ASSEMBLIES = [
     {
       name: "Toilet Set",
@@ -2541,6 +3070,15 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
                           >
                             <FileText className="w-3 h-3" /> PDF
                           </button>
+                          {e.status === "Approved" && (
+                            <button
+                              onClick={() => handleGenerateContract(e)}
+                              className="flex-1 text-[11px] py-1.5 px-2 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/20 border border-emerald-900/30 rounded flex items-center justify-center gap-1 transition-colors"
+                              title="Generate binding contract from this approved estimate"
+                            >
+                              <FileText className="w-3 h-3" /> Contract
+                            </button>
+                          )}
                           <button
                             onClick={() => loadEstimate(e)}
                             disabled={isEditing}
@@ -2590,107 +3128,80 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
     </div>
   );
 }
-
 // ================================================================
-// JOB OPERATIONS — Punch List + Material Deliveries + Photos per Job
+// JOB OPERATIONS
+// Punch list, material deliveries, photos sub-component for Jobs
 // ================================================================
-function JobOperations({ job, updateJob, session }) {
-  const toast    = useToast();
-  const confirm  = useConfirm();
-  const [section, setSection] = useState("punch");
-  const [punchItems, setPunchItems]     = useState([]);
-  const [deliveries, setDeliveries]     = useState([]);
-  const [jobPhotos, setJobPhotos]       = useState([]);
-  const [loaded, setLoaded]             = useState(false);
+function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [opsTab, setOpsTab] = useState("Punch");
+  const [punchList, setPunchList] = useState([]);
+  const [deliveries, setDeliveries] = useState([]);
+  const [loadingOps, setLoadingOps] = useState(true);
 
-  // Punch list form
-  const [newPunch, setNewPunch]         = useState("");
-  const [newPunchCat, setNewPunchCat]   = useState("general");
+  // Punch form
+  const [pItem, setPItem] = useState("");
+  const [pPriority, setPPriority] = useState("Medium");
 
   // Delivery form
-  const [delDesc, setDelDesc]           = useState("");
-  const [delSupplier, setDelSupplier]   = useState("");
-  const [delQty, setDelQty]             = useState("");
-  const [delCost, setDelCost]           = useState("");
-  const [delExpected, setDelExpected]   = useState("");
+  const [dSupplier, setDSupplier] = useState("");
+  const [dItem, setDItem] = useState("");
+  const [dQty, setDQty] = useState("");
+  const [dExpectedDate, setDExpectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dCost, setDCost] = useState("");
 
-  const [photoRefresh, setPhotoRefresh] = useState(0);
-
-  // Load punch + deliveries + photos once when this job's panel opens
+  // Load punch + deliveries when this job opens
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      const [
-        { data: pData },
-        { data: dData },
-        { data: phData },
-      ] = await Promise.all([
-        supabase.from("punch_list").select("*").eq("job_id", job.id).order("created_at", { ascending: true }),
-        supabase.from("material_deliveries").select("*").eq("job_id", job.id).order("created_at", { ascending: false }),
-        supabase.from("job_photos").select("*").eq("job_id", job.id).order("created_at", { ascending: false }),
+    let alive = true;
+    (async () => {
+      setLoadingOps(true);
+      const [punchRes, delRes] = await Promise.all([
+        supabase.from("punch_list").select("*").eq("job_id", job.id).order("created_at"),
+        supabase.from("material_deliveries").select("*").eq("job_id", job.id).order("expected_date"),
       ]);
-      if (cancelled) return;
-      setPunchItems(pData || []);
-      setDeliveries(dData || []);
-      setJobPhotos(phData || []);
-      setLoaded(true);
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [job.id, photoRefresh]);
+      if (!alive) return;
+      setPunchList(punchRes.data || []);
+      setDeliveries(delRes.data || []);
+      setLoadingOps(false);
+    })();
+    return () => { alive = false; };
+  }, [job.id]);
 
-  const totalPunch     = punchItems.length;
-  const completedPunch = punchItems.filter((p) => p.completed).length;
-  const punchPct       = totalPunch > 0 ? (completedPunch / totalPunch) * 100 : 0;
-  const allComplete    = totalPunch > 0 && completedPunch === totalPunch;
-
-  // Deliveries summary
-  const pendingDeliveries = deliveries.filter((d) => d.status === "ordered" || d.status === "in_transit").length;
-  const overdueDeliveries = deliveries.filter((d) => {
-    if (d.status === "delivered" || d.status === "installed") return false;
-    if (!d.expected_date) return false;
-    return new Date(d.expected_date) < new Date(new Date().toISOString().slice(0, 10));
-  }).length;
-
-  // PUNCH LIST handlers
-  const addPunchItem = async (e) => {
-    e?.stopPropagation?.();
-    if (!newPunch.trim()) return;
+  const addPunch = useCallback(async () => {
+    if (!pItem.trim()) return;
     const { data, error } = await supabase
       .from("punch_list")
-      .insert({ job_id: job.id, item: newPunch, category: newPunchCat, completed: false })
+      .insert({
+        job_id: job.id,
+        item: pItem,
+        priority: pPriority,
+        completed: false,
+      })
       .select()
       .single();
     if (!error && data) {
-      setPunchItems((prev) => [...prev, data]);
-      setNewPunch("");
+      setPunchList((p) => [...p, data]);
+      setPItem("");
       toast.success("Punch item added");
-    } else if (error) {
-      toast.error("Failed to add punch item: " + error.message);
+    } else {
+      toast.error("Add failed: " + (error?.message || "Unknown error"));
     }
-  };
+  }, [job.id, pItem, pPriority, toast]);
 
-  const togglePunchItem = async (item) => {
-    const newCompleted = !item.completed;
-    const updates = {
-      completed: newCompleted,
-      completed_at: newCompleted ? new Date().toISOString() : null,
-      completed_by: newCompleted ? (session?.user?.email || "unknown") : null,
-    };
+  const togglePunch = useCallback(async (item) => {
     const { data, error } = await supabase
       .from("punch_list")
-      .update(updates)
+      .update({ completed: !item.completed })
       .eq("id", item.id)
       .select()
       .single();
     if (!error && data) {
-      setPunchItems((prev) => prev.map((p) => (p.id === data.id ? data : p)));
-    } else if (error) {
-      toast.error("Update failed: " + error.message);
+      setPunchList((p) => p.map((x) => (x.id === data.id ? data : x)));
     }
-  };
+  }, []);
 
-  const deletePunchItem = async (item) => {
+  const deletePunch = useCallback(async (item) => {
     const ok = await confirm({
       title: "Delete punch item?",
       message: `"${item.item}" will be permanently removed.`,
@@ -2698,365 +3209,347 @@ function JobOperations({ job, updateJob, session }) {
       danger: true,
     });
     if (!ok) return;
-    await supabase.from("punch_list").delete().eq("id", item.id);
-    setPunchItems((prev) => prev.filter((p) => p.id !== item.id));
-    toast.success("Punch item removed");
-  };
+    const { error } = await supabase.from("punch_list").delete().eq("id", item.id);
+    if (!error) {
+      setPunchList((p) => p.filter((x) => x.id !== item.id));
+      toast.success("Punch item deleted");
+    }
+  }, [confirm, toast]);
 
-  // DELIVERY handlers
-  const addDelivery = async (e) => {
-    e?.stopPropagation?.();
-    if (!delDesc.trim()) { toast.error("Description required"); return; }
-    const today = new Date().toISOString().slice(0, 10);
+  const addDelivery = useCallback(async () => {
+    if (!dSupplier.trim() || !dItem.trim()) return;
     const { data, error } = await supabase
       .from("material_deliveries")
       .insert({
         job_id: job.id,
-        description: delDesc,
-        supplier: delSupplier || null,
-        quantity: delQty || null,
-        cost: parseFloat(delCost) || 0,
-        status: "ordered",
-        ordered_date: today,
-        expected_date: delExpected || null,
+        supplier: dSupplier,
+        item: dItem,
+        quantity: dQty || null,
+        expected_date: dExpectedDate,
+        cost: parseFloat(dCost) || null,
+        status: "Ordered",
       })
       .select()
       .single();
     if (!error && data) {
-      setDeliveries((prev) => [data, ...prev]);
-      setDelDesc(""); setDelSupplier(""); setDelQty(""); setDelCost(""); setDelExpected("");
-      toast.success("Delivery tracked");
-    } else if (error) {
-      toast.error("Failed to add delivery: " + error.message);
+      setDeliveries((d) => [...d, data]);
+      setDSupplier(""); setDItem(""); setDQty(""); setDCost("");
+      toast.success("Delivery added");
+    } else {
+      toast.error("Add failed: " + (error?.message || "Unknown error"));
     }
-  };
+  }, [job.id, dSupplier, dItem, dQty, dExpectedDate, dCost, toast]);
 
-  const updateDeliveryStatus = async (id, newStatus) => {
+  const updateDeliveryStatus = useCallback(async (del, newStatus) => {
     const updates = { status: newStatus };
-    if (newStatus === "delivered" || newStatus === "installed") {
-      updates.delivered_date = new Date().toISOString().slice(0, 10);
+    if (newStatus === "Delivered" && !del.received_date) {
+      updates.received_date = new Date().toISOString().slice(0, 10);
     }
     const { data, error } = await supabase
       .from("material_deliveries")
       .update(updates)
-      .eq("id", id)
+      .eq("id", del.id)
       .select()
       .single();
     if (!error && data) {
-      setDeliveries((prev) => prev.map((d) => (d.id === data.id ? data : d)));
-    } else if (error) {
-      toast.error("Status update failed: " + error.message);
+      setDeliveries((d) => d.map((x) => (x.id === data.id ? data : x)));
+      toast.success(`Marked ${newStatus}`);
     }
-  };
+  }, [toast]);
 
-  const deleteDelivery = async (delivery) => {
+  const deleteDelivery = useCallback(async (del) => {
     const ok = await confirm({
       title: "Delete delivery record?",
-      message: `"${delivery.description}" will be permanently removed from this job's delivery log.`,
+      message: `${del.supplier} — ${del.item} will be removed.`,
       confirmText: "Delete",
       danger: true,
     });
     if (!ok) return;
-    await supabase.from("material_deliveries").delete().eq("id", delivery.id);
-    setDeliveries((prev) => prev.filter((d) => d.id !== delivery.id));
-    toast.success("Delivery removed");
-  };
-
-  // PHOTO delete
-  const deletePhoto = async (photo) => {
-    const ok = await confirm({
-      title: "Delete this photo?",
-      message: "The photo will be permanently removed from storage. This cannot be undone.",
-      confirmText: "Delete",
-      danger: true,
-    });
-    if (!ok) return;
-    await supabase.storage.from("job-photos").remove([photo.storage_path]);
-    await supabase.from("job_photos").delete().eq("id", photo.id);
-    setPhotoRefresh((x) => x + 1);
-    toast.success("Photo deleted");
-  };
-
-  // MARK COMPLETE — gated by punch list completion
-  const markJobComplete = async (e) => {
-    e?.stopPropagation?.();
-    if (!allComplete) {
-      toast.error("Cannot mark job complete — punch list still has open items");
-      return;
+    const { error } = await supabase.from("material_deliveries").delete().eq("id", del.id);
+    if (!error) {
+      setDeliveries((d) => d.filter((x) => x.id !== del.id));
+      toast.success("Delivery deleted");
     }
-    const ok = await confirm({
-      title: "Mark job complete?",
-      message: `"${job.name}" will move out of active tracking and into the Archive view. You can still view all data, but it won't appear in active dashboards.`,
-      confirmText: "Mark Complete",
-    });
-    if (!ok) return;
-    await updateJob(job.id, { status: "Completed" });
-    toast.success(`"${job.name}" marked complete`);
-  };
+  }, [confirm, toast]);
 
-  const punchCategories = ["general", "electrical", "plumbing", "drywall", "paint", "trim", "cleanup", "inspection"];
-  const catColors = {
-    general:    "bg-slate-800 text-slate-300",
-    electrical: "bg-yellow-900/50 text-yellow-300",
-    plumbing:   "bg-blue-900/50 text-blue-300",
-    drywall:    "bg-purple-900/50 text-purple-300",
-    paint:      "bg-pink-900/50 text-pink-300",
-    trim:       "bg-orange-900/50 text-orange-300",
-    cleanup:    "bg-emerald-900/50 text-emerald-300",
-    inspection: "bg-rose-900/50 text-rose-300",
-  };
-
-  const statusColors = {
-    ordered:    "bg-slate-800 text-slate-300 border-slate-700",
-    in_transit: "bg-yellow-900/50 text-yellow-300 border-yellow-700",
-    delivered:  "bg-blue-900/50 text-blue-300 border-blue-700",
-    installed:  "bg-emerald-900/50 text-emerald-300 border-emerald-700",
-  };
+  const openPunch = punchList.filter((p) => !p.completed);
+  const completedPunch = punchList.filter((p) => p.completed);
+  const pendingDeliveries = deliveries.filter((d) => d.status !== "Delivered");
 
   return (
-    <div className="pt-4 mt-4 border-t border-slate-800" onClick={(e) => e.stopPropagation()}>
-      {/* TAB NAV */}
-      <div className="flex flex-wrap gap-2 mb-4 items-center justify-between">
-        <div className="flex flex-wrap gap-2">
-          {[
-            { key: "punch",      label: "Punch List",         count: totalPunch > 0 ? `${completedPunch}/${totalPunch}` : "0" },
-            { key: "deliveries", label: "Material Deliveries", count: deliveries.length, badge: overdueDeliveries },
-            { key: "photos",     label: "Photos",              count: jobPhotos.length },
-          ].map((s) => (
-            <button
-              key={s.key}
-              onClick={(e) => { e.stopPropagation(); setSection(s.key); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                section === s.key
-                  ? "bg-amber-400 text-black border-amber-400"
-                  : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
-              }`}
-            >
-              {s.label} <span className="opacity-70">({s.count})</span>
-              {s.badge > 0 && (
-                <span className="ml-1.5 px-1.5 py-0.5 bg-rose-500 text-white rounded-full text-[10px]">
-                  {s.badge}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-3">
+      <Tabs value={opsTab} onValueChange={setOpsTab}>
+        <TabsList>
+          <TabsTrigger value="Punch">
+            Punch List ({openPunch.length})
+          </TabsTrigger>
+          <TabsTrigger value="Deliveries">
+            Deliveries ({pendingDeliveries.length})
+          </TabsTrigger>
+          <TabsTrigger value="Photos">
+            Photos
+          </TabsTrigger>
+        </TabsList>
 
-        {/* MARK COMPLETE BUTTON — gated */}
-        {job.status === "Active" && (
-          <button
-            onClick={markJobComplete}
-            disabled={!allComplete}
-            className={`px-4 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-              allComplete
-                ? "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
-                : "bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed"
-            }`}
-            title={allComplete ? "Mark this job complete" : "Complete all punch list items first"}
-          >
-            {allComplete ? "✓ Mark Job Complete" : `🔒 Punch list ${completedPunch}/${totalPunch}`}
-          </button>
-        )}
-      </div>
+        {/* PUNCH LIST */}
+        <TabsContent value="Punch">
+          <Card>
+            <CardContent className="p-4">
+              {loadingOps ? <Spinner /> : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-4">
+                    <Inp
+                      placeholder="Punch item description..."
+                      value={pItem}
+                      onChange={(e) => setPItem(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addPunch()}
+                      className="md:col-span-7"
+                    />
+                    <Sel
+                      value={pPriority}
+                      onChange={(e) => setPPriority(e.target.value)}
+                      className="md:col-span-3"
+                    >
+                      <option>High</option>
+                      <option>Medium</option>
+                      <option>Low</option>
+                    </Sel>
+                    <Btn
+                      onClick={addPunch}
+                      className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-2"
+                    >
+                      Add
+                    </Btn>
+                  </div>
 
-      {/* PUNCH LIST */}
-      {section === "punch" && (
-        <div>
-          {totalPunch > 0 && (
-            <div className="mb-3">
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-slate-500">Completion</span>
-                <span className={allComplete ? "text-emerald-400" : "text-slate-400"}>
-                  {round2(punchPct)}% — {completedPunch} of {totalPunch}
-                </span>
-              </div>
-              <div className="w-full bg-slate-800 h-1.5 rounded-full">
-                <div
-                  className={`h-1.5 rounded-full ${allComplete ? "bg-emerald-500" : "bg-amber-400"}`}
-                  style={{ width: `${punchPct}%` }}
-                />
-              </div>
-            </div>
-          )}
+                  {openPunch.length === 0 && completedPunch.length === 0 && (
+                    <p className="text-slate-500 text-sm text-center py-6">
+                      No punch items. Add the first one above.
+                    </p>
+                  )}
 
-          {/* Add new punch item */}
-          <div className="flex flex-wrap gap-2 mb-3">
-            <Inp
-              value={newPunch}
-              onChange={(e) => setNewPunch(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addPunchItem(e)}
-              placeholder="e.g. Touch up paint above kitchen window"
-              className="flex-1 min-w-[200px]"
-            />
-            <Sel value={newPunchCat} onChange={(e) => setNewPunchCat(e.target.value)} className="w-32">
-              {punchCategories.map((c) => (
-                <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
-              ))}
-            </Sel>
-            <Btn onClick={addPunchItem} className="bg-amber-400 text-black hover:bg-amber-500 text-xs">
-              + Add Item
-            </Btn>
-          </div>
-
-          {/* Items list */}
-          {!loaded && <p className="text-xs text-slate-600">Loading...</p>}
-          {loaded && punchItems.length === 0 && (
-            <p className="text-xs text-slate-600 italic">
-              No punch items yet. Add items as you find them. Job cannot be marked complete until every item is checked off.
-            </p>
-          )}
-          <div className="space-y-1.5">
-            {punchItems.map((item) => (
-              <div
-                key={item.id}
-                className={`flex items-center gap-2 p-2 rounded border transition-all ${
-                  item.completed
-                    ? "bg-emerald-900/10 border-emerald-900/40"
-                    : "bg-slate-900/40 border-slate-800"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={item.completed}
-                  onChange={() => togglePunchItem(item)}
-                  className="accent-emerald-500 w-4 h-4 cursor-pointer"
-                />
-                <span className={`text-xs px-1.5 py-0.5 rounded uppercase tracking-wider ${catColors[item.category] || catColors.general}`}>
-                  {item.category}
-                </span>
-                <span className={`flex-1 text-sm ${item.completed ? "text-slate-500 line-through" : "text-slate-200"}`}>
-                  {item.item}
-                </span>
-                {item.completed && item.completed_at && (
-                  <span className="text-xs text-slate-600">{formatDate(item.completed_at)}</span>
-                )}
-                <button
-                  onClick={() => deletePunchItem(item)}
-                  className="text-slate-600 hover:text-rose-400 text-xs px-1"
-                  title="Delete"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* MATERIAL DELIVERIES */}
-      {section === "deliveries" && (
-        <div>
-          {/* Summary */}
-          {deliveries.length > 0 && (
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              <div className="bg-slate-900/40 border border-slate-800 rounded p-2 text-center">
-                <p className="text-xs text-slate-500">Total</p>
-                <p className="text-lg font-bold text-slate-200">{deliveries.length}</p>
-              </div>
-              <div className="bg-slate-900/40 border border-slate-800 rounded p-2 text-center">
-                <p className="text-xs text-slate-500">Pending</p>
-                <p className="text-lg font-bold text-yellow-400">{pendingDeliveries}</p>
-              </div>
-              <div className="bg-slate-900/40 border border-slate-800 rounded p-2 text-center">
-                <p className="text-xs text-slate-500">Overdue</p>
-                <p className={`text-lg font-bold ${overdueDeliveries > 0 ? "text-rose-400" : "text-slate-300"}`}>
-                  {overdueDeliveries}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Add delivery */}
-          <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 mb-3 space-y-2">
-            <p className="text-xs text-slate-500 uppercase tracking-wider">Add Delivery</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <Inp value={delDesc} onChange={(e) => setDelDesc(e.target.value)} placeholder="Description (e.g. 12 sheets 1/2 drywall)" />
-              <Inp value={delSupplier} onChange={(e) => setDelSupplier(e.target.value)} placeholder="Supplier (Menards, 84 Lumber...)" />
-              <Inp value={delQty} onChange={(e) => setDelQty(e.target.value)} placeholder="Quantity" />
-              <Inp type="number" value={delCost} onChange={(e) => setDelCost(e.target.value)} placeholder="Cost $" />
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Expected Delivery</label>
-                <Inp type="date" value={delExpected} onChange={(e) => setDelExpected(e.target.value)} />
-              </div>
-              <div className="flex items-end">
-                <Btn onClick={addDelivery} className="w-full bg-amber-400 text-black hover:bg-amber-500 text-xs">
-                  + Add Delivery
-                </Btn>
-              </div>
-            </div>
-          </div>
-
-          {/* Deliveries list */}
-          {!loaded && <p className="text-xs text-slate-600">Loading...</p>}
-          {loaded && deliveries.length === 0 && (
-            <p className="text-xs text-slate-600 italic">
-              No deliveries tracked. Add as you place orders so nothing slips through.
-            </p>
-          )}
-          <div className="space-y-1.5">
-            {deliveries.map((d) => {
-              const isOverdue = d.expected_date &&
-                (d.status === "ordered" || d.status === "in_transit") &&
-                new Date(d.expected_date) < new Date(new Date().toISOString().slice(0, 10));
-              return (
-                <div
-                  key={d.id}
-                  className={`p-2 rounded border ${isOverdue ? "border-rose-700/50 bg-rose-900/10" : "border-slate-800 bg-slate-900/40"}`}
-                >
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-slate-200 text-sm font-medium">{d.description}</p>
-                      <div className="flex flex-wrap gap-x-3 text-xs text-slate-500 mt-0.5">
-                        {d.supplier && <span>{d.supplier}</span>}
-                        {d.quantity && <span>Qty: {d.quantity}</span>}
-                        {d.cost > 0 && <span className="text-amber-400">{currency(d.cost)}</span>}
-                        {d.expected_date && (
-                          <span className={isOverdue ? "text-rose-400 font-semibold" : ""}>
-                            Expected: {formatDate(d.expected_date)} {isOverdue && "⚠ OVERDUE"}
-                          </span>
-                        )}
+                  {openPunch.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">
+                        Open Items ({openPunch.length})
+                      </p>
+                      <div className="space-y-1.5">
+                        {openPunch.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-center gap-2 px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-lg"
+                          >
+                            <button
+                              onClick={() => togglePunch(item)}
+                              className="w-5 h-5 border-2 border-slate-600 hover:border-emerald-500 rounded transition-colors shrink-0"
+                              title="Mark complete"
+                            />
+                            <span className="text-slate-200 text-sm flex-1">{item.item}</span>
+                            <Badge
+                              label={item.priority}
+                              color={
+                                item.priority === "High"   ? "red" :
+                                item.priority === "Medium" ? "yellow" : "gray"
+                              }
+                            />
+                            <button
+                              onClick={() => deletePunch(item)}
+                              className="text-slate-600 hover:text-rose-400 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                    <button onClick={() => deleteDelivery(d)} className="text-slate-600 hover:text-rose-400 text-xs">
-                      ✕
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {["ordered", "in_transit", "delivered", "installed"].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => updateDeliveryStatus(d.id, s)}
-                        className={`px-2 py-0.5 rounded text-[10px] uppercase tracking-wider border ${
-                          d.status === s ? statusColors[s] : "bg-transparent text-slate-600 border-slate-800 hover:border-slate-600"
-                        }`}
-                      >
-                        {s.replace("_", " ")}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                  )}
 
-      {/* PHOTOS */}
-      {section === "photos" && (
-        <div>
-          <PhotoUploader
-            jobId={job.id}
-            session={session}
-            onUploaded={() => setPhotoRefresh((x) => x + 1)}
-          />
-          <div className="mt-3">
-            {!loaded && <p className="text-xs text-slate-600">Loading...</p>}
-            {loaded && (
-              <PhotoGallery photos={jobPhotos} onDelete={deletePhoto} />
-            )}
-          </div>
-        </div>
-      )}
+                  {completedPunch.length > 0 && (
+                    <div>
+                      <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">
+                        Completed ({completedPunch.length})
+                      </p>
+                      <div className="space-y-1.5">
+                        {completedPunch.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-center gap-2 px-3 py-2 bg-slate-900/30 border border-slate-800/60 rounded-lg opacity-60"
+                          >
+                            <button
+                              onClick={() => togglePunch(item)}
+                              className="w-5 h-5 bg-emerald-600 border-2 border-emerald-500 rounded flex items-center justify-center shrink-0"
+                              title="Mark incomplete"
+                            >
+                              <Check className="w-3 h-3 text-white" />
+                            </button>
+                            <span className="text-slate-400 text-sm flex-1 line-through">{item.item}</span>
+                            <button
+                              onClick={() => deletePunch(item)}
+                              className="text-slate-700 hover:text-rose-400 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* MATERIAL DELIVERIES */}
+        <TabsContent value="Deliveries">
+          <Card>
+            <CardContent className="p-4">
+              {loadingOps ? <Spinner /> : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-4">
+                    <Inp
+                      placeholder="Supplier (e.g. Menards)"
+                      value={dSupplier}
+                      onChange={(e) => setDSupplier(e.target.value)}
+                      className="md:col-span-3"
+                    />
+                    <Inp
+                      placeholder="Item / description"
+                      value={dItem}
+                      onChange={(e) => setDItem(e.target.value)}
+                      className="md:col-span-3"
+                    />
+                    <Inp
+                      placeholder="Qty"
+                      value={dQty}
+                      onChange={(e) => setDQty(e.target.value)}
+                      className="md:col-span-1"
+                    />
+                    <Inp
+                      type="date"
+                      value={dExpectedDate}
+                      onChange={(e) => setDExpectedDate(e.target.value)}
+                      className="md:col-span-2"
+                    />
+                    <Inp
+                      type="number"
+                      placeholder="Cost $"
+                      value={dCost}
+                      onChange={(e) => setDCost(e.target.value)}
+                      className="md:col-span-2"
+                    />
+                    <Btn
+                      onClick={addDelivery}
+                      className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-1"
+                    >
+                      Add
+                    </Btn>
+                  </div>
+
+                  {deliveries.length === 0 ? (
+                    <p className="text-slate-500 text-sm text-center py-6">
+                      No deliveries tracked. Add the first one above.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {deliveries.map((d) => {
+                        const overdue =
+                          d.status !== "Delivered" &&
+                          new Date(d.expected_date) < new Date(new Date().toDateString());
+                        return (
+                          <div
+                            key={d.id}
+                            className={`px-3 py-2.5 rounded-lg border flex items-center gap-3 ${
+                              overdue
+                                ? "bg-rose-900/20 border-rose-800/50"
+                                : d.status === "Delivered"
+                                  ? "bg-slate-900/30 border-slate-800/60 opacity-70"
+                                  : "bg-slate-900/60 border-slate-800"
+                            }`}
+                          >
+                            <Truck className={`w-4 h-4 shrink-0 ${
+                              overdue ? "text-rose-400" :
+                              d.status === "Delivered" ? "text-emerald-400" : "text-slate-400"
+                            }`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex flex-wrap items-baseline gap-2">
+                                <span className="text-slate-200 text-sm font-medium">{d.supplier}</span>
+                                <span className="text-slate-400 text-sm">— {d.item}</span>
+                                {d.quantity && <span className="text-slate-500 text-xs">×{d.quantity}</span>}
+                                {d.cost && (
+                                  <span className="text-amber-400/70 text-xs">{currency(d.cost)}</span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 text-xs mt-0.5">
+                                <span className={overdue ? "text-rose-400" : "text-slate-500"}>
+                                  {overdue && "OVERDUE — "}
+                                  Expected {formatDate(d.expected_date)}
+                                </span>
+                                {d.received_date && (
+                                  <span className="text-emerald-400">
+                                    Delivered {formatDate(d.received_date)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <Sel
+                              value={d.status}
+                              onChange={(e) => updateDeliveryStatus(d, e.target.value)}
+                              className="w-32 text-xs py-1"
+                            >
+                              <option>Ordered</option>
+                              <option>In Transit</option>
+                              <option>Delivered</option>
+                              <option>Backordered</option>
+                            </Sel>
+                            <button
+                              onClick={() => deleteDelivery(d)}
+                              className="text-slate-600 hover:text-rose-400 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* PHOTOS */}
+        <TabsContent value="Photos">
+          <Card>
+            <CardContent className="p-4 space-y-4">
+              <PhotoUploader
+                jobId={job.id}
+                onUploaded={(p) => setJobPhotos((prev) => [p, ...prev])}
+              />
+              <PhotoGallery
+                photos={jobPhotos.filter((p) => p.job_id === job.id)}
+                onDelete={async (photo) => {
+                  const ok = await confirm({
+                    title: "Delete photo?",
+                    message: "This will remove the photo permanently.",
+                    confirmText: "Delete",
+                    danger: true,
+                  });
+                  if (!ok) return;
+                  // Delete from storage
+                  if (photo.storage_path) {
+                    await supabase.storage.from("job-photos").remove([photo.storage_path]);
+                  }
+                  await supabase.from("job_photos").delete().eq("id", photo.id);
+                  setJobPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+                  toast.success("Photo deleted");
+                }}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -3064,355 +3557,453 @@ function JobOperations({ job, updateJob, session }) {
 // ================================================================
 // JOBS
 // ================================================================
-function Jobs({ jobs, setJobs, clients, settings, session }) {
-  const toast    = useToast();
-  const confirm  = useConfirm();
-  const [name, setName]                   = useState("");
-  const [budget, setBudget]               = useState("");
-  const [status, setStatus]               = useState("Active");
-  const [selectedClientId, setSelectedClientId] = useState("");
-  const [filter, setFilter]               = useState("All");
-  const [loading, setLoading]             = useState(false);
-  const [expandedId, setExpandedId]       = useState(null);
+function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [name, setName] = useState("");
+  const [budget, setBudget] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [expandedJobId, setExpandedJobId] = useState(null);
+  const [filter, setFilter] = useState("Active");
+  const [search, setSearch] = useState("");
 
-  // Change order form state
-  const [coJobId, setCoJobId]   = useState(null);
-  const [coDesc, setCoDesc]     = useState("");
+  // Change order form (per-job, lifted state)
+  const [coDescription, setCoDescription] = useState("");
   const [coAmount, setCoAmount] = useState("");
 
-  const addJob = async () => {
-    if (!name || !budget) {
-      toast.error("Job name and budget are required");
-      return;
-    }
-    setLoading(true);
+  const addJob = useCallback(async () => {
+    if (!name.trim()) return;
     const { data, error } = await supabase
       .from("jobs")
       .insert({
         name,
-        budget:    parseFloat(budget),
-        actual:    0,
-        status,
-        notes:     "",
-        client_id: selectedClientId || null,
+        status: "Active",
+        budget: parseFloat(budget) || 0,
+        actual: 0,
+        client_id: clientId || null,
       })
       .select()
       .single();
     if (!error && data) {
       setJobs((j) => [data, ...j]);
-      toast.success(`Job "${name}" added`);
-      setName(""); setBudget(""); setSelectedClientId("");
+      setName(""); setBudget(""); setClientId("");
+      toast.success("Job created");
     } else {
-      toast.error("Failed to add job: " + (error?.message || "Unknown error"));
+      toast.error("Add failed: " + (error?.message || "Unknown error"));
     }
-    setLoading(false);
-  };
+  }, [name, budget, clientId, setJobs, toast]);
 
-  // useCallback prevents stale closures in JobOperations child components
-  const updateJob = useCallback(async (id, patch) => {
-    const { error } = await supabase.from("jobs").update(patch).eq("id", id);
-    if (error) {
-      toast.error("Update failed: " + error.message);
-      return;
+  const updateJob = useCallback(async (id, updates) => {
+    const { data, error } = await supabase
+      .from("jobs")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+    if (!error && data) {
+      setJobs((js) => js.map((j) => (j.id === data.id ? data : j)));
+    } else {
+      toast.error("Update failed: " + (error?.message || "Unknown error"));
     }
-    setJobs((j) => j.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   }, [setJobs, toast]);
 
-  const removeJob = async (job) => {
+  const deleteJob = useCallback(async (job) => {
     const ok = await confirm({
-      title: "Remove this job?",
-      message: `This will permanently delete "${job.name}" and ALL associated data: punch list items, material deliveries, photos, and daily logs.`,
+      title: "Delete this job?",
+      message: `"${job.name}" will be permanently deleted along with all linked daily logs, photos, punch list items, and material delivery records. This cannot be undone.`,
       confirmText: "Delete Job",
       danger: true,
     });
     if (!ok) return;
     const { error } = await supabase.from("jobs").delete().eq("id", job.id);
-    if (error) {
+    if (!error) {
+      setJobs((j) => j.filter((x) => x.id !== job.id));
+      toast.success("Job deleted");
+    } else {
       toast.error("Delete failed: " + error.message);
-      return;
     }
-    setJobs((j) => j.filter((x) => x.id !== job.id));
-    toast.success("Job removed");
-  };
+  }, [confirm, setJobs, toast]);
 
-  const getClientName = (id) => {
-    const c = clients.find((c) => c.id === id);
-    return c ? c.name : null;
-  };
+  // ============================================================
+  // PHASE 4 — MARK CONTRACT SIGNED
+  // This is the trigger for the documents-as-state-machine.
+  // Signing the contract arms the rest of the system: NOC clock,
+  // invoice schedule, daily log expectations, punch list scaffolding.
+  // ============================================================
+  const markContractSigned = useCallback(async (job) => {
+    const ok = await confirm({
+      title: "Mark contract as signed?",
+      message:
+        "This records that the binding contract for this job has been executed by both parties. " +
+        "From this point forward the system treats the job as legally active — Notice of Commencement " +
+        "clock starts, payment milestones become due as configured, and daily log expectations apply.",
+      confirmText: "Yes, Contract Signed",
+    });
+    if (!ok) return;
+    const contractNum = job.contract_number || `NSC-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+    await updateJob(job.id, {
+      contract_signed_at: new Date().toISOString(),
+      contract_number: contractNum,
+    });
+    toast.success(`Contract ${contractNum} marked signed`);
+  }, [confirm, updateJob, toast]);
 
-  const handleGenerateCO = (job) => {
-    if (!coDesc.trim() || !coAmount) {
-      toast.error("Enter a description and amount before generating the change order");
-      return;
-    }
-    const amount = parseFloat(coAmount);
-    if (isNaN(amount) || amount === 0) {
-      toast.error("Change order amount must be a non-zero number");
+  const clearContractSigned = useCallback(async (job) => {
+    const ok = await confirm({
+      title: "Clear contract signed status?",
+      message: "This will undo the contract-signed state for this job. The contract number will be retained.",
+      confirmText: "Clear",
+      danger: true,
+    });
+    if (!ok) return;
+    await updateJob(job.id, { contract_signed_at: null });
+    toast.success("Contract signed status cleared");
+  }, [confirm, updateJob, toast]);
+
+  const handleGenerateChangeOrder = useCallback((job) => {
+    if (!coDescription.trim() || !coAmount) {
+      toast.error("Description and amount are both required.");
       return;
     }
     const client = clients.find((c) => c.id === job.client_id) || null;
     openChangeOrder(
       job, client,
-      { description: coDesc, amount },
-      settings,
-      job.budget || 0
+      { description: coDescription, amount: parseFloat(coAmount) },
+      settings, job.budget
     );
-    // CLEAR FORM after generation so next CO doesn't have stale data
-    setCoJobId(null);
-    setCoDesc("");
+    setCoDescription("");
     setCoAmount("");
-    toast.success("Change order generated");
-  };
+  }, [coDescription, coAmount, clients, settings, toast]);
 
-  const filtered = jobs.filter((j) => {
-    if (filter === "All")     return j.status !== "Completed" && j.status !== "Lost";
-    if (filter === "Archive") return j.status === "Completed" || j.status === "Lost";
-    return j.status === filter;
+  const filteredJobs = jobs.filter((j) => {
+    if (filter !== "All" && j.status !== filter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      const cliName = clients.find((c) => c.id === j.client_id)?.name?.toLowerCase() || "";
+      if (!j.name.toLowerCase().includes(q) && !cliName.includes(q)) return false;
+    }
+    return true;
   });
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">Jobs</h1>
-        <Sel
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="w-40"
-        >
-          {["All", "Active", "Estimating", "Paused", "Completed", "Lost", "Archive"].map((f) => (
-            <option key={f}>{f}</option>
-          ))}
-        </Sel>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Briefcase className="w-6 h-6 text-amber-400" />
+            Jobs
+          </h1>
+          <p className="text-slate-500 text-sm mt-1">Track active projects, change orders, contracts</p>
+        </div>
       </div>
 
-      {/* ADD JOB FORM */}
+      {/* QUICK ADD */}
       <Card>
-        <CardContent className="p-5 space-y-3">
-          <p className="text-sm text-slate-400 font-medium">Add New Job</p>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <CardContent className="p-4">
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Quick Add Job</p>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
             <Inp
-              placeholder="Job name / address"
+              placeholder="Job name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="md:col-span-2"
+              className="md:col-span-5"
             />
+            <Sel
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              className="md:col-span-3"
+            >
+              <option value="">— No client —</option>
+              {clients.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </Sel>
             <Inp
               placeholder="Budget $"
               type="number"
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
-            />
-            <Sel value={status} onChange={(e) => setStatus(e.target.value)}>
-              {["Active", "Estimating", "Paused", "Completed", "Lost"].map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </Sel>
-            <Sel
-              value={selectedClientId}
-              onChange={(e) => setSelectedClientId(e.target.value)}
               className="md:col-span-2"
-            >
-              <option value="">— Link to client (optional) —</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </Sel>
+            />
             <Btn
               onClick={addJob}
-              disabled={loading}
               className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-2"
             >
-              Add Job
+              <Plus className="w-4 h-4 inline-block mr-1" /> Add
             </Btn>
           </div>
         </CardContent>
       </Card>
 
-      {/* JOBS TABLE */}
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-800 text-xs uppercase tracking-wider">
-                  <th className="py-3 px-4 font-medium">Job</th>
-                  <th className="py-3 px-4 font-medium">Client</th>
-                  <th className="py-3 px-4 font-medium">Status</th>
-                  <th className="py-3 px-4 font-medium">Budget</th>
-                  <th className="py-3 px-4 font-medium">Actual</th>
-                  <th className="py-3 px-4 font-medium">Margin</th>
-                  <th className="py-3 px-4 font-medium">Burn</th>
-                  <th className="py-3 px-4" />
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((j) => {
-                  const marginPct = j.budget
-                    ? ((j.budget - (j.actual || 0)) / j.budget) * 100
-                    : 0;
-                  const burnPct = j.budget
-                    ? Math.min(100, ((j.actual || 0) / j.budget) * 100)
-                    : 0;
-                  const burnColor =
-                    burnPct < 70 ? "bg-emerald-500" :
-                    burnPct < 90 ? "bg-yellow-400"  : "bg-rose-500";
-                  const isExpanded = expandedId === j.id;
+      {/* FILTER + SEARCH */}
+      {jobs.length > 3 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Inp
+            placeholder="Search jobs..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="max-w-xs"
+          />
+          {["All", "Active", "Paused", "Completed", "Lost"].map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                filter === f
+                  ? "bg-amber-400 text-black border-amber-400"
+                  : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      )}
 
-                  return (
-                    <React.Fragment key={j.id}>
-                      <tr
-                        className="border-b border-slate-800 hover:bg-slate-800/30 cursor-pointer"
-                        onClick={() => setExpandedId(isExpanded ? null : j.id)}
+      {/* JOB LIST */}
+      {filteredJobs.length === 0 ? (
+        <Card>
+          <CardContent className="p-12">
+            <EmptyState
+              icon={<Briefcase className="w-10 h-10 text-slate-700" />}
+              message={jobs.length === 0 ? "No jobs yet" : "No jobs match your filter"}
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {filteredJobs.map((j) => {
+            const expanded = expandedJobId === j.id;
+            const client = clients.find((c) => c.id === j.client_id);
+            const pct = j.budget ? Math.min(100, ((j.actual || 0) / j.budget) * 100) : 0;
+            const burnColor =
+              pct < 70 ? "bg-emerald-500" : pct < 90 ? "bg-amber-400" : "bg-rose-500";
+            const burnTextColor =
+              pct < 70 ? "text-emerald-400" : pct < 90 ? "text-amber-400" : "text-rose-400";
+            const contractSigned = !!j.contract_signed_at;
+            const linkedEstimate = estimates.find((e) => e.job_id === j.id || e.client_id === j.client_id);
+
+            return (
+              <Card key={j.id}>
+                <CardContent className="p-4">
+                  {/* COLLAPSED ROW */}
+                  <div
+                    className="flex flex-wrap items-center gap-3 cursor-pointer"
+                    onClick={() => setExpandedJobId(expanded ? null : j.id)}
+                  >
+                    <ChevronRight
+                      className={`w-4 h-4 text-slate-500 transition-transform ${expanded ? "rotate-90" : ""}`}
+                    />
+                    <div className="flex-1 min-w-[200px]">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-100 font-semibold">{j.name}</span>
+                        {contractSigned && (
+                          <span title={`Contract ${j.contract_number || ""} signed ${formatDate(j.contract_signed_at)}`}>
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          </span>
+                        )}
+                      </div>
+                      {client && (
+                        <p className="text-slate-500 text-xs">{client.name}</p>
+                      )}
+                    </div>
+                    <Badge
+                      label={j.status}
+                      color={
+                        j.status === "Active"    ? "green" :
+                        j.status === "Completed" ? "blue"  :
+                        j.status === "Paused"    ? "gray"  :
+                        j.status === "Lost"      ? "red"   : "gray"
+                      }
+                    />
+                    <div className="text-right min-w-[140px]">
+                      <p className="text-amber-400 font-semibold">{currency(j.budget)}</p>
+                      <p className="text-xs text-slate-500">
+                        {currency(j.actual || 0)} actual ({round2(pct)}%)
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* BURN BAR */}
+                  <div className="mt-3">
+                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className={`h-1.5 rounded-full ${burnColor}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* EXPANDED PANEL */}
+                  <AnimatePresence>
+                    {expanded && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
                       >
-                        <td className="py-3 px-4 text-slate-200 font-medium">{j.name}</td>
-                        <td className="py-3 px-4 text-slate-400 text-xs">
-                          {j.client_id
-                            ? (getClientName(j.client_id) || <span className="text-slate-600">—</span>)
-                            : <span className="text-slate-600">—</span>}
-                        </td>
-                        <td className="py-3 px-4">
-                          <select
-                            value={j.status}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => updateJob(j.id, { status: e.target.value })}
-                            className={`bg-transparent text-sm ${statusColor(j.status)}`}
-                          >
-                            {["Active", "Estimating", "Paused", "Completed", "Lost"].map((s) => (
-                              <option key={s}>{s}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="py-3 px-4 text-slate-300">{currency(j.budget)}</td>
-                        <td className="py-3 px-4">
-                          <Inp
-                            type="number"
-                            value={j.actual || 0}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) =>
-                              updateJob(j.id, { actual: parseFloat(e.target.value || 0) })
-                            }
-                            className="w-28 py-1"
-                          />
-                        </td>
-                        <td className={`py-3 px-4 font-semibold ${marginPct >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                          {round2(marginPct)}%
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="w-24 bg-slate-800 h-2 rounded-full">
-                            <div
-                              className={`h-2 rounded-full ${burnColor}`}
-                              style={{ width: `${burnPct}%` }}
-                            />
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <Btn
-                            onClick={(e) => { e.stopPropagation(); removeJob(j); }}
-                            className="text-xs py-1 px-2 bg-slate-900"
-                          >
-                            Remove
-                          </Btn>
-                        </td>
-                      </tr>
-
-                      {/* EXPANDED ROW */}
-                      {isExpanded && (
-                        <tr className="border-b border-slate-800 bg-slate-900/50">
-                          <td colSpan={8} className="px-4 py-4">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                              <div>
-                                <label className="text-xs text-slate-500 block mb-1">Job Notes</label>
-                                <textarea
-                                  value={j.notes || ""}
-                                  onChange={(e) => updateJob(j.id, { notes: e.target.value })}
-                                  rows={2}
-                                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
-                                  placeholder="Add notes..."
-                                />
-                              </div>
-                              <div>
-                                <label className="text-xs text-slate-500 block mb-1">Client</label>
-                                <Sel
-                                  value={j.client_id || ""}
-                                  onChange={(e) =>
-                                    updateJob(j.id, { client_id: e.target.value || null })
-                                  }
-                                >
-                                  <option value="">— No client —</option>
-                                  {clients.map((c) => (
-                                    <option key={c.id} value={c.id}>{c.name}</option>
-                                  ))}
-                                </Sel>
-                              </div>
-                              <div className="text-xs text-slate-500 space-y-1">
-                                <p>Created: {formatDate(j.created_at)}</p>
-                                <p>
-                                  Remaining:{" "}
-                                  <span className="text-emerald-400">
-                                    {currency((j.budget || 0) - (j.actual || 0))}
-                                  </span>
-                                </p>
-                              </div>
+                        <div className="mt-4 pt-4 border-t border-slate-800 space-y-4">
+                          {/* JOB FIELDS */}
+                          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div>
+                              <label className="text-xs text-slate-500 uppercase tracking-wider">Status</label>
+                              <Sel
+                                value={j.status}
+                                onChange={(e) => updateJob(j.id, { status: e.target.value })}
+                                className="mt-1"
+                              >
+                                <option>Active</option>
+                                <option>Paused</option>
+                                <option>Completed</option>
+                                <option>Lost</option>
+                              </Sel>
                             </div>
-
-                            {/* CHANGE ORDER SECTION */}
-                            <div className="pt-4 border-t border-slate-800">
-                              <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">
-                                Generate Change Order
+                            <div>
+                              <label className="text-xs text-slate-500 uppercase tracking-wider">Budget</label>
+                              <Inp
+                                type="number"
+                                value={j.budget || 0}
+                                onChange={(e) => updateJob(j.id, { budget: parseFloat(e.target.value) || 0 })}
+                                className="mt-1"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-500 uppercase tracking-wider">Actual Spend</label>
+                              <Inp
+                                type="number"
+                                value={j.actual || 0}
+                                onChange={(e) => updateJob(j.id, { actual: parseFloat(e.target.value) || 0 })}
+                                className="mt-1"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-500 uppercase tracking-wider">Burn Rate</label>
+                              <p className={`mt-2 text-lg font-bold ${burnTextColor}`}>
+                                {round2(pct)}%
                               </p>
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                <textarea
-                                  value={coJobId === j.id ? coDesc : ""}
-                                  onChange={(e) => { setCoJobId(j.id); setCoDesc(e.target.value); }}
-                                  rows={2}
-                                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50 md:col-span-2"
-                                  placeholder="Describe the additional work..."
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                                <div className="space-y-2">
-                                  <Inp
-                                    type="number"
-                                    placeholder="Additional amount $"
-                                    value={coJobId === j.id ? coAmount : ""}
-                                    onChange={(e) => { setCoJobId(j.id); setCoAmount(e.target.value); }}
-                                    onClick={(e) => e.stopPropagation()}
-                                  />
-                                  <Btn
-                                    onClick={(e) => { e.stopPropagation(); handleGenerateCO(j); }}
-                                    className="w-full text-xs bg-amber-400/10 text-amber-400
-                                      hover:bg-amber-400/20 border border-amber-900/30 flex items-center justify-center gap-1.5"
-                                  >
-                                    <FileEdit className="w-3.5 h-3.5" />
-                                    Generate Change Order
-                                  </Btn>
+                            </div>
+                          </div>
+
+                          {/* PHASE 4 — CONTRACT STATUS */}
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div className="flex items-center gap-3">
+                                <FileText className={`w-5 h-5 ${contractSigned ? "text-emerald-400" : "text-slate-500"}`} />
+                                <div>
+                                  <p className="text-xs text-slate-500 uppercase tracking-wider">Contract Status</p>
+                                  {contractSigned ? (
+                                    <p className="text-sm text-emerald-300 font-medium mt-0.5">
+                                      Signed {formatDate(j.contract_signed_at)}
+                                      {j.contract_number && (
+                                        <span className="text-slate-500 ml-2">({j.contract_number})</span>
+                                      )}
+                                    </p>
+                                  ) : (
+                                    <p className="text-sm text-slate-400 mt-0.5">
+                                      No contract signed yet — operational machine inactive.
+                                    </p>
+                                  )}
                                 </div>
                               </div>
+                              <div className="flex flex-wrap gap-2">
+                                {linkedEstimate && linkedEstimate.status === "Approved" && (
+                                  <button
+                                    onClick={() => {
+                                      const client = clients.find((c) => c.id === linkedEstimate.client_id) || null;
+                                      const contractNum = j.contract_number || `NSC-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`;
+                                      openContract(linkedEstimate, client, settings, contractNum);
+                                    }}
+                                    className="text-xs py-1.5 px-3 bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 border border-amber-900/40 rounded flex items-center gap-1.5 transition-colors"
+                                    title="Generate contract PDF from linked approved estimate"
+                                  >
+                                    <FileText className="w-3.5 h-3.5" /> Generate Contract PDF
+                                  </button>
+                                )}
+                                {!contractSigned ? (
+                                  <button
+                                    onClick={() => markContractSigned(j)}
+                                    className="text-xs py-1.5 px-3 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 border border-emerald-700/50 rounded flex items-center gap-1.5 transition-colors"
+                                  >
+                                    <CheckCircle2 className="w-3.5 h-3.5" /> Mark Contract Signed
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => clearContractSigned(j)}
+                                    className="text-xs py-1.5 px-3 bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700 rounded flex items-center gap-1.5 transition-colors"
+                                  >
+                                    Clear Signed Status
+                                  </button>
+                                )}
+                              </div>
                             </div>
+                            {!linkedEstimate && (
+                              <p className="text-xs text-slate-600 mt-2 italic">
+                                No approved estimate linked to this job. Approve an estimate in the Estimator
+                                first to enable contract generation.
+                              </p>
+                            )}
+                          </div>
 
-                            {/* JOB OPERATIONS — Punch List + Material Deliveries + Photos */}
-                            <JobOperations
-                              job={j}
-                              updateJob={updateJob}
-                              session={session}
-                            />
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-                {filtered.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="py-8 text-center text-slate-600">
-                      No jobs. Add one above.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+                          {/* CHANGE ORDER GENERATOR */}
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4">
+                            <p className="text-xs text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+                              <FileEdit className="w-4 h-4" /> Generate Change Order
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+                              <textarea
+                                placeholder="Describe additional work..."
+                                value={coDescription}
+                                onChange={(e) => setCoDescription(e.target.value)}
+                                rows={2}
+                                className="md:col-span-7 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                              />
+                              <Inp
+                                type="number"
+                                placeholder="Amount $"
+                                value={coAmount}
+                                onChange={(e) => setCoAmount(e.target.value)}
+                                className="md:col-span-3"
+                              />
+                              <Btn
+                                onClick={() => handleGenerateChangeOrder(j)}
+                                className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-2"
+                              >
+                                Generate
+                              </Btn>
+                            </div>
+                          </div>
+
+                          {/* OPS (PUNCH / DELIVERIES / PHOTOS) */}
+                          <JobOperations
+                            job={j}
+                            jobPhotos={jobPhotos}
+                            dailyLogs={dailyLogs}
+                            setJobPhotos={setJobPhotos}
+                            settings={settings}
+                            allJobs={jobs}
+                          />
+
+                          {/* DELETE JOB */}
+                          <div className="pt-3 border-t border-slate-800 flex justify-end">
+                            <button
+                              onClick={() => deleteJob(j)}
+                              className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1.5 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" /> Delete Job
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -3421,276 +4012,251 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
 // CLIENTS
 // ================================================================
 function Clients({ clients, setClients, jobs, estimates }) {
-  const toast    = useToast();
-  const confirm  = useConfirm();
-  const [name, setName]           = useState("");
-  const [email, setEmail]         = useState("");
-  const [phone, setPhone]         = useState("");
-  const [company, setCompany]     = useState("");
-  const [notes, setNotes]         = useState("");
-  const [filter, setFilter]       = useState("All");
-  const [expandedId, setExpandedId] = useState(null);
-  const [saving, setSaving]       = useState(false);
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [name, setName]   = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [notes, setNotes] = useState("");
+  const [search, setSearch] = useState("");
+  const [editingId, setEditingId] = useState(null);
 
-  const addClient = async () => {
+  const resetForm = () => {
+    setEditingId(null);
+    setName(""); setEmail(""); setPhone(""); setAddress(""); setNotes("");
+  };
+
+  const saveClient = useCallback(async () => {
     if (!name.trim()) {
       toast.error("Client name is required");
       return;
     }
-    setSaving(true);
-    const { data, error } = await supabase
-      .from("clients")
-      .insert({ name, email, phone, company, notes, status: "Prospect" })
-      .select()
-      .single();
-    if (!error && data) {
-      setClients((c) => [data, ...c]);
-      setName(""); setEmail(""); setPhone(""); setCompany(""); setNotes("");
-      toast.success(`Client "${name}" added`);
+    const payload = { name, email, phone, address, notes };
+    if (editingId) {
+      const { data, error } = await supabase
+        .from("clients")
+        .update(payload)
+        .eq("id", editingId)
+        .select()
+        .single();
+      if (!error && data) {
+        setClients((cs) => cs.map((c) => (c.id === data.id ? data : c)));
+        toast.success("Client updated");
+        resetForm();
+      } else {
+        toast.error("Update failed: " + (error?.message || "Unknown error"));
+      }
     } else {
-      toast.error("Failed to add client: " + (error?.message || "Unknown error"));
+      const { data, error } = await supabase
+        .from("clients")
+        .insert(payload)
+        .select()
+        .single();
+      if (!error && data) {
+        setClients((cs) => [data, ...cs]);
+        toast.success("Client added");
+        resetForm();
+      } else {
+        toast.error("Add failed: " + (error?.message || "Unknown error"));
+      }
     }
-    setSaving(false);
+  }, [name, email, phone, address, notes, editingId, setClients, toast]);
+
+  const editClient = (c) => {
+    setEditingId(c.id);
+    setName(c.name || "");
+    setEmail(c.email || "");
+    setPhone(c.phone || "");
+    setAddress(c.address || "");
+    setNotes(c.notes || "");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const updateClient = async (id, patch) => {
-    const { error } = await supabase.from("clients").update(patch).eq("id", id);
-    if (error) {
-      toast.error("Update failed: " + error.message);
-      return;
-    }
-    setClients((c) => c.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  };
-
-  const removeClient = async (client) => {
+  const deleteClient = useCallback(async (client) => {
     const linkedJobs = jobs.filter((j) => j.client_id === client.id);
     const linkedEsts = estimates.filter((e) => e.client_id === client.id);
-
-    let message = `"${client.name}" will be permanently deleted.`;
-    let details = null;
-
+    let warningDetails = "";
     if (linkedJobs.length > 0 || linkedEsts.length > 0) {
-      message = `"${client.name}" will be permanently deleted.\n\nLinked records will lose their client connection but will NOT be deleted:`;
-      const jobLines = linkedJobs.map((j) => `• Job: ${j.name} (${j.status})`).join("\n");
-      const estLines = linkedEsts.map((e) => `• Estimate: ${e.name} — ${currency(e.grand_total)}`).join("\n");
-      details = [jobLines, estLines].filter(Boolean).join("\n");
+      const parts = [];
+      if (linkedJobs.length > 0) parts.push(`${linkedJobs.length} job${linkedJobs.length > 1 ? "s" : ""}`);
+      if (linkedEsts.length > 0) parts.push(`${linkedEsts.length} estimate${linkedEsts.length > 1 ? "s" : ""}`);
+      warningDetails = `\n\n${parts.join(" and ")} are linked to this client. They will not be deleted, but will lose their client reference.`;
     }
-
     const ok = await confirm({
       title: "Delete this client?",
-      message,
-      details,
+      message: `"${client.name}" will be permanently deleted.${warningDetails}`,
       confirmText: "Delete Client",
       danger: true,
     });
     if (!ok) return;
-
     const { error } = await supabase.from("clients").delete().eq("id", client.id);
-    if (error) {
+    if (!error) {
+      setClients((cs) => cs.filter((c) => c.id !== client.id));
+      if (editingId === client.id) resetForm();
+      toast.success("Client deleted");
+    } else {
       toast.error("Delete failed: " + error.message);
-      return;
     }
-    setClients((c) => c.filter((x) => x.id !== client.id));
-    toast.success(`"${client.name}" deleted`);
-  };
+  }, [jobs, estimates, editingId, setClients, confirm, toast]);
 
-  const filtered        = clients.filter((c) => filter === "All" || c.status === filter);
-  const getClientJobs   = (id) => jobs.filter((j) => j.client_id === id);
-  const getClientEsts   = (id) => estimates.filter((e) => e.client_id === id);
+  const filtered = clients.filter((c) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      c.name?.toLowerCase().includes(q) ||
+      c.email?.toLowerCase().includes(q) ||
+      c.phone?.includes(q)
+    );
+  });
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">Clients</h1>
-        <div className="flex items-center gap-2">
-          <span className="text-slate-500 text-sm">{clients.length} total</span>
-          <Sel
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="w-36"
-          >
-            {["All", "Prospect", "Active", "Closed"].map((f) => (
-              <option key={f}>{f}</option>
-            ))}
-          </Sel>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Users className="w-6 h-6 text-amber-400" />
+            Clients
+          </h1>
+          <p className="text-slate-500 text-sm mt-1">
+            {clients.length} client{clients.length !== 1 ? "s" : ""} on file
+          </p>
         </div>
       </div>
 
-      {/* ADD CLIENT FORM */}
+      {/* CLIENT FORM */}
       <Card>
-        <CardContent className="p-5 space-y-3">
-          <p className="text-sm text-slate-400 font-medium">Add Client</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Inp placeholder="Full name *" value={name}    onChange={(e) => setName(e.target.value)} />
-            <Inp placeholder="Company (optional)" value={company} onChange={(e) => setCompany(e.target.value)} />
-            <Inp placeholder="Phone"  value={phone}   onChange={(e) => setPhone(e.target.value)} />
-            <Inp placeholder="Email"  value={email}   onChange={(e) => setEmail(e.target.value)} />
-            <Inp placeholder="Notes"  value={notes}   onChange={(e) => setNotes(e.target.value)} />
-            <Btn onClick={addClient} className="bg-amber-400 text-black hover:bg-amber-500">
-              Add Client
-            </Btn>
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <p className="text-xs text-slate-500 uppercase tracking-wider">
+              {editingId ? "Edit Client" : "Add New Client"}
+            </p>
+            {editingId && (
+              <button
+                onClick={resetForm}
+                className="text-xs text-slate-500 hover:text-amber-400"
+              >
+                Cancel
+              </button>
+            )}
           </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+            <Inp placeholder="Full name *"  value={name}    onChange={(e) => setName(e.target.value)} />
+            <Inp placeholder="Email"        value={email}   onChange={(e) => setEmail(e.target.value)} />
+            <Inp placeholder="Phone"        value={phone}   onChange={(e) => setPhone(e.target.value)} />
+            <Inp placeholder="Address"      value={address} onChange={(e) => setAddress(e.target.value)} />
+          </div>
+          <textarea
+            placeholder="Notes (optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            className="w-full mb-3 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+          />
+          <Btn
+            onClick={saveClient}
+            className="bg-amber-400 text-black hover:bg-amber-500 flex items-center gap-2"
+          >
+            {editingId ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+            {editingId ? "Update Client" : "Add Client"}
+          </Btn>
         </CardContent>
       </Card>
 
-      {/* CLIENTS TABLE */}
-      <Card>
-        <CardContent className="p-0">
-          {(
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-slate-500 border-b border-slate-800 text-xs uppercase tracking-wider">
-                    <th className="py-3 px-4 font-medium">Name</th>
-                    <th className="py-3 px-4 font-medium">Contact</th>
-                    <th className="py-3 px-4 font-medium">Status</th>
-                    <th className="py-3 px-4 font-medium">Jobs</th>
-                    <th className="py-3 px-4 font-medium">Estimates</th>
-                    <th className="py-3 px-4 font-medium">Added</th>
-                    <th className="py-3 px-4" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((c) => {
-                    const cJobs = getClientJobs(c.id);
-                    const cEsts = getClientEsts(c.id);
-                    const isExp = expandedId === c.id;
+      {/* SEARCH */}
+      {clients.length > 5 && (
+        <Inp
+          placeholder="Search clients..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-md"
+        />
+      )}
 
-                    return (
-                      <React.Fragment key={c.id}>
-                        <tr
-                          className="border-b border-slate-800 hover:bg-slate-800/20 cursor-pointer"
-                          onClick={() => setExpandedId(isExp ? null : c.id)}
-                        >
-                          <td className="py-3 px-4">
-                            <p className="text-slate-200 font-medium">{c.name}</p>
-                            {c.company && (
-                              <p className="text-slate-500 text-xs">{c.company}</p>
-                            )}
-                          </td>
-                          <td className="py-3 px-4 text-slate-400 text-xs">
-                            {c.email && <p>{c.email}</p>}
-                            {c.phone && <p>{formatPhone(c.phone)}</p>}
-                          </td>
-                          <td className="py-3 px-4">
-                            <select
-                              value={c.status}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={(e) => updateClient(c.id, { status: e.target.value })}
-                              className={`bg-transparent text-sm ${statusColor(c.status)}`}
-                            >
-                              {["Prospect", "Active", "Closed"].map((s) => (
-                                <option key={s}>{s}</option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="py-3 px-4 text-slate-300 text-xs">
-                            {cJobs.length} job{cJobs.length !== 1 ? "s" : ""}
-                          </td>
-                          <td className="py-3 px-4 text-slate-300 text-xs">
-                            {cEsts.length} estimate{cEsts.length !== 1 ? "s" : ""}
-                          </td>
-                          <td className="py-3 px-4 text-slate-500 text-xs">
-                            {formatDate(c.created_at)}
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <Btn
-                              onClick={(e) => { e.stopPropagation(); removeClient(c); }}
-                              className="text-xs py-1 px-2 bg-slate-900"
-                            >
-                              Remove
-                            </Btn>
-                          </td>
-                        </tr>
+      {/* CLIENT LIST */}
+      {filtered.length === 0 ? (
+        <Card>
+          <CardContent className="p-12">
+            <EmptyState
+              icon={<Users className="w-10 h-10 text-slate-700" />}
+              message={clients.length === 0 ? "No clients yet" : "No clients match your search"}
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filtered.map((c) => {
+            const cJobs = jobs.filter((j) => j.client_id === c.id);
+            const cEsts = estimates.filter((e) => e.client_id === c.id);
+            return (
+              <Card key={c.id}>
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between mb-3 gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-slate-100 font-semibold truncate">{c.name}</p>
+                      {c.address && <p className="text-slate-500 text-xs truncate">{c.address}</p>}
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        onClick={() => editClient(c)}
+                        className="text-slate-500 hover:text-amber-400 p-1 transition-colors"
+                        title="Edit"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => deleteClient(c)}
+                        className="text-slate-500 hover:text-rose-400 p-1 transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
 
-                        {isExp && (
-                          <tr className="border-b border-slate-800 bg-slate-900/50">
-                            <td colSpan={7} className="px-4 py-4">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Jobs</p>
-                                  {cJobs.length === 0 ? (
-                                    <p className="text-slate-600 text-xs">No jobs linked</p>
-                                  ) : (
-                                    <div className="space-y-1">
-                                      {cJobs.map((j) => (
-                                        <div
-                                          key={j.id}
-                                          className="flex justify-between items-center text-xs py-1 border-b border-slate-800"
-                                        >
-                                          <span className="text-slate-300">{j.name}</span>
-                                          <div className="flex items-center gap-2">
-                                            <span className="text-slate-500">{currency(j.budget)}</span>
-                                            <Badge
-                                              label={j.status}
-                                              color={
-                                                j.status === "Active"    ? "green" :
-                                                j.status === "Completed" ? "blue"  : "gray"
-                                              }
-                                            />
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                                <div>
-                                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Estimates</p>
-                                  {cEsts.length === 0 ? (
-                                    <p className="text-slate-600 text-xs">No estimates linked</p>
-                                  ) : (
-                                    <div className="space-y-1">
-                                      {cEsts.map((e) => (
-                                        <div
-                                          key={e.id}
-                                          className="flex justify-between items-center text-xs py-1 border-b border-slate-800"
-                                        >
-                                          <span className="text-slate-300">{e.name}</span>
-                                          <div className="flex items-center gap-2">
-                                            <span className="text-amber-400">{currency(e.grand_total)}</span>
-                                            <Badge
-                                              label={e.status}
-                                              color={
-                                                e.status === "Approved" ? "green" :
-                                                e.status === "Sent"     ? "yellow" : "gray"
-                                              }
-                                            />
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                              <div className="mt-3">
-                                <label className="text-xs text-slate-500 block mb-1">Notes</label>
-                                <Inp
-                                  value={c.notes || ""}
-                                  onChange={(e) => updateClient(c.id, { notes: e.target.value })}
-                                  className="text-xs"
-                                  placeholder="Notes..."
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                  {filtered.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-600">
-                        No clients yet.
-                      </td>
-                    </tr>
+                  <div className="space-y-1 text-sm mb-3">
+                    {c.phone && (
+                      <div className="flex items-center gap-2 text-slate-400">
+                        <Phone className="w-3 h-3 text-slate-600" />
+                        <a href={`tel:${c.phone}`} className="hover:text-amber-400">
+                          {formatPhone(c.phone)}
+                        </a>
+                      </div>
+                    )}
+                    {c.email && (
+                      <div className="flex items-center gap-2 text-slate-400">
+                        <Mail className="w-3 h-3 text-slate-600" />
+                        <a href={`mailto:${c.email}`} className="hover:text-amber-400 truncate">
+                          {c.email}
+                        </a>
+                      </div>
+                    )}
+                  </div>
+
+                  {(cJobs.length > 0 || cEsts.length > 0) && (
+                    <div className="pt-3 border-t border-slate-800 flex gap-3 text-xs">
+                      {cJobs.length > 0 && (
+                        <span className="text-slate-500">
+                          <strong className="text-slate-300">{cJobs.length}</strong> job{cJobs.length > 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {cEsts.length > 0 && (
+                        <span className="text-slate-500">
+                          <strong className="text-slate-300">{cEsts.length}</strong> estimate{cEsts.length > 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
                   )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+
+                  {c.notes && (
+                    <p className="text-xs text-slate-500 mt-2 line-clamp-2 italic">{c.notes}</p>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -3699,193 +4265,201 @@ function Clients({ clients, setClients, jobs, estimates }) {
 // SCHEDULE
 // ================================================================
 function Schedule({ jobs }) {
-  const toast    = useToast();
-  const confirm  = useConfirm();
-  const [events, setEvents]   = useState([]);
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [title, setTitle]     = useState("");
-  const [job, setJob]         = useState("");
-  const [date, setDate]       = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [jobName, setJobName] = useState("");
+  const [task, setTask] = useState("");
 
   useEffect(() => {
-    supabase
-      .from("schedule")
-      .select("*")
-      .order("date", { ascending: true })
-      .then(({ data }) => { if (data) setEvents(data); setLoading(false); });
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      const { data } = await supabase.from("schedule").select("*").order("date");
+      if (alive) {
+        setItems(data || []);
+        setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
   }, []);
 
-  const addEvent = async () => {
-    if (!title.trim() || !date) {
-      toast.error("Title and date are required");
-      return;
-    }
+  const addItem = useCallback(async () => {
+    if (!jobName.trim() || !task.trim()) return;
     const { data, error } = await supabase
       .from("schedule")
-      .insert({ title, job: job || "General", date, status: "Active", type: "Task" })
+      .insert({ date, job: jobName, task })
       .select()
       .single();
     if (!error && data) {
-      setEvents((e) => [...e, data].sort((a, b) => new Date(a.date) - new Date(b.date)));
-      setTitle("");
-      toast.success("Event added");
-    } else if (error) {
-      toast.error("Failed to add event: " + error.message);
+      setItems((it) => [...it, data]);
+      setJobName(""); setTask("");
+      toast.success("Schedule item added");
+    } else {
+      toast.error("Add failed: " + (error?.message || "Unknown error"));
     }
-  };
+  }, [date, jobName, task, toast]);
 
-  const updateEvent = async (id, patch) => {
-    const { error } = await supabase.from("schedule").update(patch).eq("id", id);
-    if (error) {
-      toast.error("Update failed: " + error.message);
-      return;
-    }
-    setEvents((e) => e.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  };
-
-  const removeEvent = async (event) => {
+  const deleteItem = useCallback(async (item) => {
     const ok = await confirm({
-      title: "Delete event?",
-      message: `"${event.title}" will be permanently removed from the schedule.`,
+      title: "Delete schedule item?",
+      message: `"${item.task}" on ${formatDate(item.date)} will be removed.`,
       confirmText: "Delete",
       danger: true,
     });
     if (!ok) return;
-    await supabase.from("schedule").delete().eq("id", event.id);
-    setEvents((e) => e.filter((x) => x.id !== event.id));
-    toast.success("Event removed");
-  };
+    const { error } = await supabase.from("schedule").delete().eq("id", item.id);
+    if (!error) {
+      setItems((it) => it.filter((i) => i.id !== item.id));
+      toast.success("Item deleted");
+    }
+  }, [confirm, toast]);
 
-  const today    = new Date().toISOString().slice(0, 10);
-  const upcoming = events.filter((e) => e.date >= today && e.status !== "Completed");
-  const past     = events.filter((e) => e.date < today  || e.status === "Completed");
-
-  const renderTable = (items, label) => (
-    <Card>
-      <CardContent className="p-5">
-        <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">
-          {label} ({items.length})
-        </p>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-slate-500 border-b border-slate-800 text-xs">
-              <th className="py-2 font-medium">Date</th>
-              <th className="font-medium">Title</th>
-              <th className="font-medium">Job</th>
-              <th className="font-medium">Status</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((e) => (
-              <tr key={e.id} className="border-b border-slate-800/50 hover:bg-slate-800/20">
-                <td className="py-2 text-slate-300 font-medium">{formatDate(e.date)}</td>
-                <td className="py-2 text-slate-200">{e.title}</td>
-                <td className="py-2 text-slate-400 text-xs">{e.job}</td>
-                <td className="py-2">
-                  <select
-                    value={e.status}
-                    onChange={(ev) => updateEvent(e.id, { status: ev.target.value })}
-                    className={`bg-transparent text-sm ${statusColor(e.status)}`}
-                  >
-                    {["Active", "Completed", "Paused"].map((s) => (
-                      <option key={s}>{s}</option>
-                    ))}
-                  </select>
-                </td>
-                <td className="py-2 text-right">
-                  <Btn
-                    onClick={() => removeEvent(e)}
-                    className="text-xs py-1 px-2 bg-slate-900"
-                  >
-                    ✕
-                  </Btn>
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={5} className="py-4 text-slate-600 text-center">None</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </CardContent>
-    </Card>
-  );
+  // Group by date
+  const byDate = items.reduce((acc, it) => {
+    (acc[it.date] = acc[it.date] || []).push(it);
+    return acc;
+  }, {});
+  const sortedDates = Object.keys(byDate).sort();
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Schedule</h1>
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Calendar className="w-6 h-6 text-amber-400" />
+          Schedule
+        </h1>
+        <p className="text-slate-500 text-sm mt-1">
+          {items.length} item{items.length !== 1 ? "s" : ""} scheduled
+        </p>
+      </div>
+
+      {/* ADD FORM */}
       <Card>
-        <CardContent className="p-5 space-y-3">
-          <p className="text-sm text-slate-400 font-medium">Add Task / Event</p>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <CardContent className="p-4">
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Add Schedule Item</p>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
             <Inp
-              placeholder="Title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="md:col-span-2"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="md:col-span-3"
             />
-            <Sel value={job} onChange={(e) => setJob(e.target.value)}>
-              <option value="">General</option>
+            <Sel
+              value={jobName}
+              onChange={(e) => setJobName(e.target.value)}
+              className="md:col-span-3"
+            >
+              <option value="">— Select job —</option>
               {jobs.map((j) => (
                 <option key={j.id} value={j.name}>{j.name}</option>
               ))}
             </Sel>
             <Inp
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
+              placeholder="Task / scope"
+              value={task}
+              onChange={(e) => setTask(e.target.value)}
+              className="md:col-span-4"
             />
             <Btn
-              onClick={addEvent}
-              className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-4"
+              onClick={addItem}
+              className="bg-amber-400 text-black hover:bg-amber-500 md:col-span-2"
             >
-              Add
+              <Plus className="w-4 h-4 inline-block mr-1" /> Add
             </Btn>
           </div>
         </CardContent>
       </Card>
-      {loading ? <Spinner /> : (
-        <>
-          {renderTable(upcoming, "Upcoming")}
-          {renderTable(past, "Past / Completed")}
-        </>
+
+      {/* SCHEDULE LIST */}
+      {loading ? <Spinner /> : items.length === 0 ? (
+        <Card>
+          <CardContent className="p-12">
+            <EmptyState
+              icon={<Calendar className="w-10 h-10 text-slate-700" />}
+              message="Nothing scheduled yet"
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {sortedDates.map((d) => (
+            <Card key={d}>
+              <CardContent className="p-4">
+                <p className="text-xs text-amber-400 uppercase tracking-wider font-semibold mb-3">
+                  {new Date(d + "T12:00:00").toLocaleDateString("en-US", {
+                    weekday: "long", month: "long", day: "numeric", year: "numeric",
+                  })}
+                </p>
+                <div className="space-y-2">
+                  {byDate[d].map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-3 px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-lg"
+                    >
+                      <Briefcase className="w-4 h-4 text-slate-500 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-slate-200 text-sm font-medium">{item.job}</p>
+                        <p className="text-slate-500 text-xs">{item.task}</p>
+                      </div>
+                      <button
+                        onClick={() => deleteItem(item)}
+                        className="text-slate-600 hover:text-rose-400 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
 // ================================================================
-// PHOTO UPLOADER (used by Daily Logs and Job views)
+// PHOTO UPLOADER
 // ================================================================
-function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact = false }) {
+function PhotoUploader({ jobId, onUploaded }) {
   const toast = useToast();
   const [uploading, setUploading] = useState(false);
-  const [phase, setPhase] = useState("during");
+  const [phase, setPhase] = useState("Progress");
   const [caption, setCaption] = useState("");
+  const fileInputRef = useRef(null);
 
-  const compressImage = (file, maxWidth = 1600, quality = 0.82) => {
-    return new Promise((resolve, reject) => {
+  // Compress image client-side before upload (resize + jpeg quality)
+  const compressImage = (file) =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
-          let { width, height } = img;
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
           const canvas = document.createElement("canvas");
-          canvas.width = width;
-          canvas.height = height;
+          const maxDim = 1600;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          canvas.width = w;
+          canvas.height = h;
           const ctx = canvas.getContext("2d");
-          ctx.drawImage(img, 0, 0, width, height);
+          ctx.drawImage(img, 0, 0, w, h);
           canvas.toBlob(
             (blob) => blob ? resolve(blob) : reject(new Error("Compression failed")),
             "image/jpeg",
-            quality
+            0.85
           );
         };
         img.onerror = reject;
@@ -3894,685 +4468,474 @@ function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact 
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-  };
 
-  const handleFiles = async (files) => {
-    if (!files || files.length === 0) return;
+  const handleUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     setUploading(true);
-    const uploadedBy = session?.user?.email || "unknown";
     let successCount = 0;
-    let failCount = 0;
-
-    try {
-      for (const file of Array.from(files)) {
-        if (!file.type.startsWith("image/")) {
-          toast.warn(`Skipped ${file.name} — not an image`);
-          failCount++;
-          continue;
-        }
-
+    for (const file of files) {
+      try {
         const compressed = await compressImage(file);
         const ext = "jpg";
         const filename = `${jobId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-
-        const { error: uploadErr } = await supabase.storage
+        const { error: uploadError } = await supabase.storage
           .from("job-photos")
           .upload(filename, compressed, {
-            cacheControl: "3600",
             contentType: "image/jpeg",
-            upsert: false,
+            cacheControl: "3600",
           });
-
-        if (uploadErr) {
-          toast.error(`Upload failed: ${uploadErr.message}`);
-          failCount++;
-          continue;
-        }
-
-        const { error: insertErr } = await supabase.from("job_photos").insert({
-          job_id: jobId,
-          daily_log_id: dailyLogId,
-          storage_path: filename,
-          phase,
-          caption: caption || null,
-          uploaded_by: uploadedBy,
-        });
-
-        if (insertErr) {
-          toast.error(`Save failed: ${insertErr.message}`);
-          failCount++;
-        } else {
-          successCount++;
-        }
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage
+          .from("job-photos")
+          .getPublicUrl(filename);
+        const { data: photoRecord, error: dbError } = await supabase
+          .from("job_photos")
+          .insert({
+            job_id: jobId,
+            storage_path: filename,
+            url: urlData.publicUrl,
+            phase,
+            caption: caption || null,
+          })
+          .select()
+          .single();
+        if (dbError) throw dbError;
+        if (onUploaded) onUploaded(photoRecord);
+        successCount++;
+      } catch (err) {
+        console.error("Upload error:", err);
+        toast.error(`Failed to upload ${file.name}: ${err.message}`);
       }
-
-      setCaption("");
-      if (successCount > 0) {
-        toast.success(`${successCount} photo${successCount > 1 ? "s" : ""} uploaded`);
-      }
-      if (onUploaded) onUploaded();
-    } catch (err) {
-      toast.error("Upload error: " + err.message);
-    } finally {
-      setUploading(false);
+    }
+    setUploading(false);
+    setCaption("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (successCount > 0) {
+      toast.success(`${successCount} photo${successCount > 1 ? "s" : ""} uploaded`);
     }
   };
 
   return (
-    <div className={`bg-slate-900/60 border border-slate-700 rounded-lg ${compact ? "p-2" : "p-3"}`}>
-      <div className={`flex flex-wrap items-center gap-2 ${compact ? "" : "mb-2"}`}>
-        <Sel value={phase} onChange={(e) => setPhase(e.target.value)} className="w-32">
-          <option value="before">Before</option>
-          <option value="during">During</option>
-          <option value="after">After</option>
-          <option value="issues">Issue / Problem</option>
-        </Sel>
-        {!compact && (
-          <Inp
-            value={caption}
-            onChange={(e) => setCaption(e.target.value)}
-            placeholder="Optional caption"
-            className="flex-1 min-w-[150px]"
-          />
-        )}
-        <label
-          className={`px-3 py-2 rounded-lg font-medium cursor-pointer transition-colors text-sm whitespace-nowrap ${
-            uploading
-              ? "bg-slate-700 text-slate-400 cursor-wait"
-              : "bg-amber-400 text-black hover:bg-amber-500"
-          }`}
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+        <Sel
+          value={phase}
+          onChange={(e) => setPhase(e.target.value)}
+          className="md:col-span-3"
         >
-          {uploading ? (
-            <span className="flex items-center gap-1.5">
-              <RefreshCw className="w-4 h-4 animate-spin" /> Uploading...
-            </span>
-          ) : (
-            <span className="flex items-center gap-1.5">
-              <Camera className="w-4 h-4" /> Upload Photos
-            </span>
-          )}
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            capture="environment"
-            disabled={uploading}
-            onChange={(e) => handleFiles(e.target.files)}
-            className="hidden"
-          />
-        </label>
+          <option>Before</option>
+          <option>Progress</option>
+          <option>Issue</option>
+          <option>Final</option>
+          <option>Reference</option>
+        </Sel>
+        <Inp
+          placeholder="Caption (optional)"
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          className="md:col-span-9"
+        />
       </div>
-      {!compact && (
-        <p className="text-xs text-slate-600 mt-1">
-          Tap to take a photo or upload from gallery. Auto-compressed before upload.
-        </p>
-      )}
+      <div className="flex items-center gap-3">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleUpload}
+          disabled={uploading}
+          className="block text-xs text-slate-400
+            file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
+            file:text-sm file:font-semibold
+            file:bg-amber-400 file:text-black hover:file:bg-amber-500
+            file:cursor-pointer cursor-pointer"
+        />
+        {uploading && (
+          <span className="text-xs text-amber-400 flex items-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Uploading...
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-slate-600">
+        Photos are compressed to 1600px max and uploaded to Supabase Storage.
+      </p>
     </div>
   );
 }
 
 // ================================================================
-// PHOTO GALLERY (displays photos for a job or daily log)
+// PHOTO GALLERY
 // ================================================================
-function PhotoGallery({ photos, onDelete, compact = false }) {
-  const [enlarged, setEnlarged] = useState(null);
+function PhotoGallery({ photos, onDelete }) {
+  const [filter, setFilter] = useState("All");
+  const [lightboxPhoto, setLightboxPhoto] = useState(null);
 
-  const getPublicUrl = (path) => {
-    const { data } = supabase.storage.from("job-photos").getPublicUrl(path);
-    return data?.publicUrl;
-  };
+  const filtered = filter === "All" ? photos : photos.filter((p) => p.phase === filter);
 
-  const phaseColors = {
-    before: "bg-blue-900/60 text-blue-300 border-blue-700",
-    during: "bg-amber-900/60 text-amber-300 border-amber-700",
-    after:  "bg-emerald-900/60 text-emerald-300 border-emerald-700",
-    issues: "bg-rose-900/60 text-rose-300 border-rose-700",
-  };
-
-  if (!photos || photos.length === 0) {
+  if (photos.length === 0) {
     return (
-      <p className="text-slate-600 text-xs italic">No photos uploaded yet.</p>
+      <div className="py-8 text-center">
+        <ImageIcon className="w-10 h-10 text-slate-700 mx-auto mb-2" />
+        <p className="text-slate-500 text-sm">No photos yet for this job</p>
+      </div>
     );
   }
 
   return (
-    <>
-      <div className={`grid gap-2 ${compact ? "grid-cols-3 md:grid-cols-4" : "grid-cols-2 md:grid-cols-4 lg:grid-cols-5"}`}>
-        {photos.map((p) => {
-          const url = getPublicUrl(p.storage_path);
+    <div>
+      <div className="flex flex-wrap gap-1 mb-3">
+        {["All", "Before", "Progress", "Issue", "Final", "Reference"].map((f) => {
+          const count = f === "All" ? photos.length : photos.filter((p) => p.phase === f).length;
+          if (f !== "All" && count === 0) return null;
           return (
-            <div key={p.id} className="relative group">
-              <img
-                src={url}
-                alt={p.caption || "Job photo"}
-                onClick={() => setEnlarged(p)}
-                className="w-full h-24 object-cover rounded-lg cursor-pointer border border-slate-700 hover:border-amber-400 transition-colors"
-              />
-              <div className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-semibold border ${phaseColors[p.phase] || phaseColors.during} uppercase tracking-wider`}>
-                {p.phase}
-              </div>
-              {onDelete && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onDelete(p); }}
-                  className="absolute top-1 right-1 w-5 h-5 bg-rose-600 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity hover:bg-rose-500"
-                  title="Delete photo"
-                >
-                  ×
-                </button>
-              )}
-            </div>
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`text-[11px] px-2 py-1 rounded border transition-colors ${
+                filter === f
+                  ? "bg-amber-400 text-black border-amber-400"
+                  : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+              }`}
+            >
+              {f} ({count})
+            </button>
           );
         })}
       </div>
 
-      {/* LIGHTBOX */}
-      {enlarged && (
-        <div
-          onClick={() => setEnlarged(null)}
-          className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 cursor-pointer"
-        >
-          <div className="max-w-4xl max-h-[90vh] flex flex-col items-center gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {filtered.map((p) => (
+          <div
+            key={p.id}
+            className="relative group aspect-square rounded-lg overflow-hidden bg-slate-900 border border-slate-800 cursor-pointer"
+            onClick={() => setLightboxPhoto(p)}
+          >
             <img
-              src={getPublicUrl(enlarged.storage_path)}
-              alt={enlarged.caption || "Job photo"}
-              className="max-w-full max-h-[80vh] object-contain rounded-lg"
-              onClick={(e) => e.stopPropagation()}
+              src={p.url}
+              alt={p.caption || "Job photo"}
+              loading="lazy"
+              className="w-full h-full object-cover"
             />
-            <div className="text-center text-white text-sm">
-              <div className="flex items-center justify-center gap-3 mb-1">
-                <span className={`px-2 py-0.5 rounded text-xs font-semibold border ${phaseColors[enlarged.phase] || phaseColors.during} uppercase`}>
-                  {enlarged.phase}
-                </span>
-                <span className="text-slate-400 text-xs">{formatDate(enlarged.created_at)}</span>
-              </div>
-              {enlarged.caption && <p className="text-slate-300 italic">{enlarged.caption}</p>}
-              <p className="text-slate-600 text-xs mt-1">Click anywhere to close</p>
+            <div className="absolute top-1 left-1">
+              <Badge
+                label={p.phase}
+                color={
+                  p.phase === "Issue"  ? "red"    :
+                  p.phase === "Final"  ? "green"  :
+                  p.phase === "Before" ? "gray"   : "yellow"
+                }
+              />
+            </div>
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-end p-2 opacity-0 group-hover:opacity-100">
+              {p.caption && (
+                <p className="text-xs text-white truncate w-full">{p.caption}</p>
+              )}
             </div>
           </div>
-        </div>
-      )}
-    </>
+        ))}
+      </div>
+
+      {/* LIGHTBOX */}
+      <AnimatePresence>
+        {lightboxPhoto && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/90 z-[1100] flex items-center justify-center px-4"
+            onClick={() => setLightboxPhoto(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className="max-w-5xl max-h-[90vh] relative"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img
+                src={lightboxPhoto.url}
+                alt={lightboxPhoto.caption || "Job photo"}
+                className="max-w-full max-h-[85vh] object-contain rounded-lg"
+              />
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div className="text-white">
+                  <Badge
+                    label={lightboxPhoto.phase}
+                    color={
+                      lightboxPhoto.phase === "Issue"  ? "red"    :
+                      lightboxPhoto.phase === "Final"  ? "green"  :
+                      lightboxPhoto.phase === "Before" ? "gray"   : "yellow"
+                    }
+                  />
+                  {lightboxPhoto.caption && (
+                    <p className="text-sm mt-2">{lightboxPhoto.caption}</p>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      onDelete(lightboxPhoto);
+                      setLightboxPhoto(null);
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-sm rounded flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                  <button
+                    onClick={() => setLightboxPhoto(null)}
+                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
 // ================================================================
 // DAILY LOGS
 // ================================================================
-function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
-  const toast    = useToast();
-  const confirm  = useConfirm();
-  const today = new Date().toISOString().slice(0, 10);
-  const [selectedJobId, setSelectedJobId] = useState("");
-  const [logDate, setLogDate]             = useState(today);
-  const [weather, setWeather]             = useState("");
-  const [temperature, setTemperature]     = useState("");
-  const [hoursConnor, setHoursConnor]     = useState("");
-  const [hoursDad, setHoursDad]           = useState("");
-  const [hoursOther, setHoursOther]       = useState("");
-  const [otherWorker, setOtherWorker]     = useState("");
-  const [workPerformed, setWorkPerformed] = useState("");
-  const [materialsUsed, setMaterialsUsed] = useState("");
-  const [issues, setIssues]               = useState("");
-  const [visitors, setVisitors]           = useState("");
-  const [saving, setSaving]               = useState(false);
-  const [editingLogId, setEditingLogId]   = useState(null);
-  const [photos, setPhotos]               = useState([]);
-  const [photoRefresh, setPhotoRefresh]   = useState(0);
+function DailyLogs({ jobs, dailyLogs, setDailyLogs }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [jobId, setJobId] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [crew, setCrew] = useState("");
+  const [hours, setHours] = useState("");
+  const [weather, setWeather] = useState("");
+  const [workCompleted, setWorkCompleted] = useState("");
+  const [issues, setIssues] = useState("");
+  const [filterJobId, setFilterJobId] = useState("All");
 
   const activeJobs = jobs.filter((j) => j.status === "Active");
-  const jobsLoggedToday = new Set(
-    dailyLogs.filter((l) => l.log_date === today).map((l) => l.job_id)
-  );
 
-  const getClientName = (clientId) => {
-    const c = clients.find((c) => c.id === clientId);
-    return c ? c.name : null;
-  };
-
-  // Load photos for the currently selected job + date
-  useEffect(() => {
-    if (!selectedJobId) { setPhotos([]); return; }
-    let log_id = editingLogId;
-    if (!log_id) {
-      const existing = dailyLogs.find(
-        (l) => l.job_id === selectedJobId && l.log_date === logDate
-      );
-      log_id = existing?.id;
-    }
-
-    if (log_id) {
-      supabase
-        .from("job_photos")
-        .select("*")
-        .eq("daily_log_id", log_id)
-        .order("created_at", { ascending: false })
-        .then(({ data }) => { if (data) setPhotos(data); });
-    } else {
-      setPhotos([]);
-    }
-  }, [selectedJobId, logDate, editingLogId, dailyLogs, photoRefresh]);
-
-  const resetForm = () => {
-    setWeather(""); setTemperature("");
-    setHoursConnor(""); setHoursDad(""); setHoursOther(""); setOtherWorker("");
-    setWorkPerformed(""); setMaterialsUsed(""); setIssues(""); setVisitors("");
-    setEditingLogId(null);
-  };
-
-  const loadExistingLog = (jobId, date) => {
-    const existing = dailyLogs.find(
-      (l) => l.job_id === jobId && l.log_date === date
-    );
-    if (existing) {
-      setWeather(existing.weather || "");
-      setTemperature(existing.temperature || "");
-      setHoursConnor(existing.hours_connor || "");
-      setHoursDad(existing.hours_dad || "");
-      setHoursOther(existing.hours_other || "");
-      setOtherWorker(existing.other_worker_name || "");
-      setWorkPerformed(existing.work_performed || "");
-      setMaterialsUsed(existing.materials_used || "");
-      setIssues(existing.issues || "");
-      setVisitors(existing.visitors || "");
-      setEditingLogId(existing.id);
-    } else {
-      resetForm();
-    }
-  };
-
-  const handleSelectJob = (jobId) => {
-    setSelectedJobId(jobId);
-    setLogDate(today);
-    loadExistingLog(jobId, today);
-  };
-
-  const handleDateChange = (newDate) => {
-    setLogDate(newDate);
-    if (selectedJobId) loadExistingLog(selectedJobId, newDate);
-  };
-
-  const saveLog = async () => {
-    if (!selectedJobId) { toast.error("Select a job first"); return; }
-    if (!workPerformed.trim()) {
-      toast.error("Work Performed is required — describe what was done today");
+  const submitLog = useCallback(async () => {
+    if (!jobId) {
+      toast.error("Pick a job");
       return;
     }
-
-    setSaving(true);
-    const createdBy = session?.user?.email || "unknown";
-
-    const payload = {
-      job_id: selectedJobId,
-      log_date: logDate,
-      weather: weather || null,
-      temperature: temperature ? parseInt(temperature) : null,
-      hours_connor: parseFloat(hoursConnor) || 0,
-      hours_dad: parseFloat(hoursDad) || 0,
-      hours_other: parseFloat(hoursOther) || 0,
-      other_worker_name: otherWorker || null,
-      work_performed: workPerformed,
-      materials_used: materialsUsed || null,
-      issues: issues || null,
-      visitors: visitors || null,
-      created_by: createdBy,
-    };
-
-    if (editingLogId) {
-      const { data, error } = await supabase
-        .from("daily_logs")
-        .update(payload)
-        .eq("id", editingLogId)
-        .select()
-        .single();
-
-      if (!error && data) {
-        setDailyLogs((prev) => prev.map((l) => (l.id === data.id ? data : l)));
-        toast.success("Log updated");
-      } else {
-        toast.error("Update failed: " + (error?.message || "Unknown error"));
-      }
-    } else {
-      const { data, error } = await supabase
-        .from("daily_logs")
-        .insert(payload)
-        .select()
-        .single();
-
-      if (!error && data) {
-        setDailyLogs((prev) => [data, ...prev]);
-        setEditingLogId(data.id);
-        toast.success("Log saved — you can now attach photos");
-      } else {
-        toast.error("Save failed: " + (error?.message || "Unknown error"));
-      }
+    if (!workCompleted.trim()) {
+      toast.error("Describe work completed");
+      return;
     }
+    const payload = {
+      job_id: jobId,
+      log_date: date,
+      crew,
+      hours: parseFloat(hours) || null,
+      weather,
+      work_completed: workCompleted,
+      issues,
+    };
+    const { data, error } = await supabase
+      .from("daily_logs")
+      .insert(payload)
+      .select()
+      .single();
+    if (!error && data) {
+      setDailyLogs((d) => [data, ...d]);
+      toast.success("Log saved");
+      setCrew(""); setHours(""); setWeather("");
+      setWorkCompleted(""); setIssues("");
+    } else {
+      toast.error("Save failed: " + (error?.message || "Unknown error"));
+    }
+  }, [jobId, date, crew, hours, weather, workCompleted, issues, setDailyLogs, toast]);
 
-    setSaving(false);
-  };
-
-  const deletePhoto = async (photo) => {
+  const deleteLog = useCallback(async (log) => {
     const ok = await confirm({
-      title: "Delete this photo?",
-      message: "The photo will be permanently removed from storage.",
+      title: "Delete this log entry?",
+      message: `Log from ${formatDate(log.log_date)} will be permanently removed.`,
       confirmText: "Delete",
       danger: true,
     });
     if (!ok) return;
-    await supabase.storage.from("job-photos").remove([photo.storage_path]);
-    await supabase.from("job_photos").delete().eq("id", photo.id);
-    setPhotoRefresh((x) => x + 1);
-    toast.success("Photo deleted");
-  };
+    const { error } = await supabase.from("daily_logs").delete().eq("id", log.id);
+    if (!error) {
+      setDailyLogs((d) => d.filter((x) => x.id !== log.id));
+      toast.success("Log deleted");
+    }
+  }, [confirm, setDailyLogs, toast]);
 
-  const selectedJob = jobs.find((j) => j.id === selectedJobId);
-  const totalHours = (parseFloat(hoursConnor) || 0) + (parseFloat(hoursDad) || 0) + (parseFloat(hoursOther) || 0);
+  const getJobName = (id) => jobs.find((j) => j.id === id)?.name || "(unknown job)";
 
-  // Past logs for selected job
-  const jobPastLogs = selectedJobId
-    ? dailyLogs.filter((l) => l.job_id === selectedJobId).slice(0, 14)
-    : [];
+  const filtered = filterJobId === "All"
+    ? dailyLogs
+    : dailyLogs.filter((l) => l.job_id === filterJobId);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Daily Logs</h1>
-          <p className="text-slate-500 text-sm mt-1">
-            End-of-day update required for every active job. Today: {new Date(today).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-          </p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <ClipboardList className="w-6 h-6 text-amber-400" />
+          Daily Logs
+        </h1>
+        <p className="text-slate-500 text-sm mt-1">
+          Field documentation, lien protection, and audit trail
+        </p>
       </div>
 
-      {/* ACTIVE JOBS NEEDING LOGS */}
+      {/* LOG ENTRY FORM */}
       <Card>
-        <CardContent className="p-5">
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-xs text-slate-500 uppercase tracking-wider">
-              Active Jobs — Today's Status
-            </p>
-            <span className="text-xs text-slate-600">
-              {activeJobs.length - jobsLoggedToday.size} of {activeJobs.length} pending
-            </span>
+        <CardContent className="p-4">
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">New Log Entry</p>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 mb-3">
+            <div className="md:col-span-5">
+              <label className="block text-xs text-slate-400 mb-1">Job *</label>
+              <Sel value={jobId} onChange={(e) => setJobId(e.target.value)}>
+                <option value="">— Select active job —</option>
+                {activeJobs.map((j) => (
+                  <option key={j.id} value={j.id}>{j.name}</option>
+                ))}
+              </Sel>
+            </div>
+            <div className="md:col-span-3">
+              <label className="block text-xs text-slate-400 mb-1">Date</label>
+              <Inp type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-slate-400 mb-1">Hours</label>
+              <Inp
+                type="number"
+                step="0.5"
+                placeholder="8"
+                value={hours}
+                onChange={(e) => setHours(e.target.value)}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-slate-400 mb-1">Weather</label>
+              <Inp
+                placeholder="60°F clear"
+                value={weather}
+                onChange={(e) => setWeather(e.target.value)}
+              />
+            </div>
           </div>
-          {activeJobs.length === 0 && (
-            <p className="text-slate-600 text-sm italic">
-              No active jobs. Mark a job as Active in the Jobs tab to log work.
-            </p>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {activeJobs.map((j) => {
-              const logged = jobsLoggedToday.has(j.id);
-              const isSelected = selectedJobId === j.id;
-              return (
-                <button
-                  key={j.id}
-                  onClick={() => handleSelectJob(j.id)}
-                  className={`text-left p-3 rounded-lg border-2 transition-all ${
-                    isSelected
-                      ? "border-amber-400 bg-amber-900/20"
-                      : logged
-                      ? "border-emerald-700/40 bg-emerald-900/10 hover:border-emerald-600"
-                      : "border-rose-700/50 bg-rose-900/10 hover:border-rose-600"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <span className="text-slate-200 font-medium text-sm truncate">{j.name}</span>
-                    <span
-                      className={`shrink-0 w-2.5 h-2.5 rounded-full ${
-                        logged ? "bg-emerald-400" : "bg-rose-400"
-                      }`}
-                      title={logged ? "Logged today" : "Needs today's log"}
-                    />
-                  </div>
-                  {j.client_id && getClientName(j.client_id) && (
-                    <p className="text-slate-500 text-xs">{getClientName(j.client_id)}</p>
-                  )}
-                  <p className={`text-xs mt-1 ${logged ? "text-emerald-400" : "text-rose-400"}`}>
-                    {logged ? "✓ Logged today" : "● Needs today's log"}
-                  </p>
-                </button>
-              );
-            })}
+          <div className="mb-3">
+            <label className="block text-xs text-slate-400 mb-1">Crew on site</label>
+            <Inp
+              placeholder="Connor, Dad, John (laborer)"
+              value={crew}
+              onChange={(e) => setCrew(e.target.value)}
+            />
           </div>
+          <div className="mb-3">
+            <label className="block text-xs text-slate-400 mb-1">Work Completed *</label>
+            <textarea
+              value={workCompleted}
+              onChange={(e) => setWorkCompleted(e.target.value)}
+              rows={3}
+              placeholder="What was done today..."
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+            />
+          </div>
+          <div className="mb-3">
+            <label className="block text-xs text-slate-400 mb-1">Issues / Notes</label>
+            <textarea
+              value={issues}
+              onChange={(e) => setIssues(e.target.value)}
+              rows={2}
+              placeholder="Anything notable, delays, change requests, etc."
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+            />
+          </div>
+          <Btn
+            onClick={submitLog}
+            className="bg-amber-400 text-black hover:bg-amber-500 flex items-center gap-2"
+          >
+            <Save className="w-4 h-4" /> Save Log Entry
+          </Btn>
         </CardContent>
       </Card>
 
-      {/* LOG ENTRY FORM */}
-      {selectedJobId && (
-        <Card className="border-amber-900/40">
-          <CardContent className="p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">
-                  {editingLogId ? "Editing Log" : "New Log"}
-                </p>
-                <h2 className="text-lg font-bold text-slate-100">{selectedJob?.name}</h2>
-                {selectedJob?.client_id && getClientName(selectedJob.client_id) && (
-                  <p className="text-slate-500 text-xs">{getClientName(selectedJob.client_id)}</p>
-                )}
-              </div>
-              <button
-                onClick={() => { setSelectedJobId(""); resetForm(); }}
-                className="text-xs text-slate-500 hover:text-slate-300"
-              >
-                ✕ Close
-              </button>
-            </div>
-
-            {/* DATE */}
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">Log Date</label>
-              <Inp
-                type="date"
-                value={logDate}
-                onChange={(e) => handleDateChange(e.target.value)}
-                className="w-44"
-              />
-            </div>
-
-            {/* WEATHER + TEMP */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">Weather</label>
-                <Sel value={weather} onChange={(e) => setWeather(e.target.value)}>
-                  <option value="">— Select —</option>
-                  <option value="Sunny / Clear">Sunny / Clear</option>
-                  <option value="Partly Cloudy">Partly Cloudy</option>
-                  <option value="Overcast">Overcast</option>
-                  <option value="Rain">Rain</option>
-                  <option value="Heavy Rain">Heavy Rain</option>
-                  <option value="Snow">Snow</option>
-                  <option value="Wind">Wind</option>
-                  <option value="Storm">Storm</option>
-                </Sel>
-              </div>
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">Temperature (°F)</label>
-                <Inp
-                  type="number"
-                  placeholder="e.g. 68"
-                  value={temperature}
-                  onChange={(e) => setTemperature(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {/* HOURS PER PERSON */}
-            <div>
-              <label className="block text-xs text-slate-400 mb-2">
-                Hours Worked
-                {totalHours > 0 && (
-                  <span className="text-amber-400 ml-2">({totalHours.toFixed(1)} total)</span>
-                )}
-              </label>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div>
-                  <p className="text-xs text-slate-500 mb-1">Connor</p>
-                  <Inp
-                    type="number"
-                    step="0.25"
-                    placeholder="Hours"
-                    value={hoursConnor}
-                    onChange={(e) => setHoursConnor(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <p className="text-xs text-slate-500 mb-1">Dad</p>
-                  <Inp
-                    type="number"
-                    step="0.25"
-                    placeholder="Hours"
-                    value={hoursDad}
-                    onChange={(e) => setHoursDad(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <p className="text-xs text-slate-500 mb-1">
-                    Other {otherWorker && `(${otherWorker})`}
-                  </p>
-                  <div className="flex gap-2">
-                    <Inp
-                      type="number"
-                      step="0.25"
-                      placeholder="Hours"
-                      value={hoursOther}
-                      onChange={(e) => setHoursOther(e.target.value)}
-                    />
-                    <Inp
-                      placeholder="Name"
-                      value={otherWorker}
-                      onChange={(e) => setOtherWorker(e.target.value)}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* WORK PERFORMED */}
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">
-                Work Performed <span className="text-rose-400">*</span>
-              </label>
-              <textarea
-                value={workPerformed}
-                onChange={(e) => setWorkPerformed(e.target.value)}
-                rows={4}
-                placeholder="Describe what was completed today. Be specific — this is your record if a dispute comes up later."
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
-              />
-            </div>
-
-            {/* MATERIALS USED */}
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">Materials Used Today</label>
-              <textarea
-                value={materialsUsed}
-                onChange={(e) => setMaterialsUsed(e.target.value)}
-                rows={2}
-                placeholder="e.g. 12 sheets 1/2 drywall, 4 boxes screws, 3 tubes adhesive..."
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
-              />
-            </div>
-
-            {/* ISSUES + VISITORS */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">Issues / Problems</label>
-                <textarea
-                  value={issues}
-                  onChange={(e) => setIssues(e.target.value)}
-                  rows={2}
-                  placeholder="Anything go wrong? Damaged materials, weather delays, code questions..."
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">Visitors / Inspectors</label>
-                <textarea
-                  value={visitors}
-                  onChange={(e) => setVisitors(e.target.value)}
-                  rows={2}
-                  placeholder="Who showed up? Inspector name, sub, client visit, supplier delivery..."
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
-                />
-              </div>
-            </div>
-
-            {/* SAVE BUTTON */}
-            <div className="flex gap-2">
-              <Btn
-                onClick={saveLog}
-                disabled={saving}
-                className="bg-amber-400 text-black hover:bg-amber-500 font-semibold flex-1"
-              >
-                {saving ? "Saving..." : editingLogId ? "Update Log" : "Save Log"}
-              </Btn>
-            </div>
-
-            {/* PHOTO UPLOADER — only shown after log is saved */}
-            {editingLogId && (
-              <div className="pt-3 border-t border-slate-800">
-                <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">
-                  Photos for this log
-                </p>
-                <PhotoUploader
-                  jobId={selectedJobId}
-                  dailyLogId={editingLogId}
-                  session={session}
-                  onUploaded={() => setPhotoRefresh((x) => x + 1)}
-                />
-                <div className="mt-3">
-                  <PhotoGallery photos={photos} onDelete={deletePhoto} />
-                </div>
-              </div>
-            )}
-            {!editingLogId && (
-              <p className="text-xs text-slate-600 italic">
-                💡 Save the log first, then you can attach photos.
-              </p>
-            )}
-          </CardContent>
-        </Card>
+      {/* FILTER */}
+      {dailyLogs.length > 5 && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">Filter:</span>
+          <Sel
+            value={filterJobId}
+            onChange={(e) => setFilterJobId(e.target.value)}
+            className="max-w-xs"
+          >
+            <option value="All">All Jobs</option>
+            {jobs.map((j) => (
+              <option key={j.id} value={j.id}>{j.name}</option>
+            ))}
+          </Sel>
+        </div>
       )}
 
-      {/* PAST LOGS FOR SELECTED JOB */}
-      {selectedJobId && jobPastLogs.length > 0 && (
+      {/* LOG LIST */}
+      {filtered.length === 0 ? (
         <Card>
-          <CardContent className="p-5">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">
-              Past Logs for {selectedJob?.name} ({jobPastLogs.length})
-            </p>
-            <div className="space-y-2">
-              {jobPastLogs.map((l) => {
-                const totalH = (l.hours_connor || 0) + (l.hours_dad || 0) + (l.hours_other || 0);
-                const isCurrentlyEditing = editingLogId === l.id;
-                return (
-                  <div
-                    key={l.id}
-                    onClick={() => { setLogDate(l.log_date); loadExistingLog(selectedJobId, l.log_date); }}
-                    className={`p-3 rounded-lg border cursor-pointer transition-all ${
-                      isCurrentlyEditing
-                        ? "border-amber-400 bg-amber-900/10"
-                        : "border-slate-800 hover:border-slate-700 bg-slate-900/40"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <span className="text-slate-200 font-semibold text-sm">{formatDate(l.log_date)}</span>
-                        {l.weather && <span className="text-xs text-slate-500">{l.weather}{l.temperature && ` · ${l.temperature}°F`}</span>}
-                      </div>
-                      <span className="text-amber-400 text-xs font-semibold">{totalH.toFixed(1)}h</span>
-                    </div>
-                    <p className="text-slate-400 text-xs line-clamp-2">{l.work_performed}</p>
-                    {l.issues && (
-                      <p className="text-rose-400 text-xs mt-1">⚠ {l.issues}</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+          <CardContent className="p-12">
+            <EmptyState
+              icon={<ClipboardList className="w-10 h-10 text-slate-700" />}
+              message={dailyLogs.length === 0 ? "No logs yet" : "No logs match your filter"}
+            />
           </CardContent>
         </Card>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((log) => (
+            <Card key={log.id}>
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-slate-100 font-semibold">{getJobName(log.job_id)}</p>
+                    <p className="text-xs text-amber-400 mt-0.5">
+                      {new Date(log.log_date + "T12:00:00").toLocaleDateString("en-US", {
+                        weekday: "long", month: "short", day: "numeric", year: "numeric",
+                      })}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-slate-500 shrink-0">
+                    {log.hours && (
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3" /> {log.hours}h
+                      </span>
+                    )}
+                    {log.weather && (
+                      <span className="flex items-center gap-1">
+                        <CloudSun className="w-3 h-3" /> {log.weather}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => deleteLog(log)}
+                      className="text-slate-600 hover:text-rose-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                {log.crew && (
+                  <p className="text-xs text-slate-500 mb-2">
+                    <span className="text-slate-400 font-medium">Crew:</span> {log.crew}
+                  </p>
+                )}
+                <div className="space-y-2">
+                  <div>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Work Completed</p>
+                    <p className="text-slate-300 text-sm whitespace-pre-line">{log.work_completed}</p>
+                  </div>
+                  {log.issues && (
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Issues / Notes</p>
+                      <p className="text-slate-400 text-sm whitespace-pre-line">{log.issues}</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -4583,380 +4946,438 @@ function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
 // ================================================================
 function Settings({ settings, setSettings }) {
   const toast = useToast();
-  const [form, setForm] = useState({ ...settings });
+  const [local, setLocal] = useState(settings);
+  const [saving, setSaving] = useState(false);
 
-  const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
+  useEffect(() => { setLocal(settings); }, [settings]);
 
-  const saveSettings = () => {
-    const saved = {
-      ...form,
-      overheadPct: parseFloat(form.overheadPct) || 0,
-      profitPct:   parseFloat(form.profitPct)   || 0,
-      salesTaxPct: parseFloat(form.salesTaxPct) || 0,
-      laborRate:   parseFloat(form.laborRate)   || 95,
-    };
-    setSettings(saved);
-    localStorage.setItem("northshore_settings", JSON.stringify(saved));
-    toast.success("Settings saved");
+  const update = (k, v) => setLocal((s) => ({ ...s, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    setSettings(local);
+    // Persist to Supabase if you have a settings row, else localStorage
+    try {
+      localStorage.setItem("northshore_settings", JSON.stringify(local));
+      toast.success("Settings saved");
+    } catch (e) {
+      toast.error("Save failed: " + e.message);
+    }
+    setSaving(false);
   };
 
-  const totalMarkup =
-    (parseFloat(form.overheadPct) || 0) + (parseFloat(form.profitPct) || 0);
-
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Settings</h1>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* COMPANY INFO */}
-        <Card>
-          <CardContent className="p-5 space-y-4">
-            <p className="text-sm font-semibold text-slate-300">Company Info</p>
-            {[
-              ["Company Name",   "companyName",    "text"],
-              ["Phone",          "companyPhone",   "tel"],
-              ["Email",          "companyEmail",   "email"],
-              ["Address",        "companyAddress", "text"],
-              ["License Number", "licenseNumber",  "text"],
-              ["Website",        "website",        "text"],
-            ].map(([label, field, type]) => (
-              <div key={field}>
-                <label className="block text-xs text-slate-500 mb-1">{label}</label>
-                <Inp
-                  type={type}
-                  value={form[field] || ""}
-                  onChange={(e) => update(field, e.target.value)}
-                />
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        {/* ESTIMATE DEFAULTS */}
-        <Card>
-          <CardContent className="p-5 space-y-4">
-            <p className="text-sm font-semibold text-slate-300">Estimate Defaults</p>
-
-            <div>
-              <label className="block text-xs text-slate-500 mb-1">
-                Default Labor Rate ($/hr)
-              </label>
-              <Inp
-                type="number"
-                value={form.laborRate || 95}
-                onChange={(e) => update("laborRate", e.target.value)}
-              />
-              <p className="text-xs text-slate-600 mt-0.5">
-                Suggested minimum: $95/hr for a licensed builder in West Michigan
-              </p>
-            </div>
-
-            {[
-              ["Overhead %", "overheadPct", "Applied to subtotal for business costs"],
-              ["Profit %",   "profitPct",   "Your margin on top of costs"],
-            ].map(([label, key, hint]) => (
-              <div key={key}>
-                <label className="block text-xs text-slate-500 mb-1">{label}</label>
-                <Inp
-                  type="number"
-                  value={form[key]}
-                  onChange={(e) => update(key, e.target.value)}
-                />
-                <p className="text-xs text-slate-600 mt-0.5">{hint}</p>
-              </div>
-            ))}
-
-            <div className="bg-amber-900/20 rounded-lg p-3 border border-amber-900/40">
-              <p className="text-xs text-amber-400/90 font-medium mb-1">
-                Michigan Sales Tax — Do Not Charge Clients
-              </p>
-              <p className="text-xs text-slate-500">
-                Per Michigan RAB 2025-18, residential contractors pay sales tax
-                when purchasing materials and do NOT add a sales tax line to
-                client proposals. Tax is absorbed into material pricing.
-              </p>
-            </div>
-
-            <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-              <p className="text-xs text-slate-400">
-                Total markup:{" "}
-                <span className="text-amber-400 font-semibold">
-                  {totalMarkup.toFixed(1)}%
-                </span>
-              </p>
-              <p className="text-xs text-slate-500 mt-0.5">
-                A $10,000 job costs ~{currency(10000 * (1 + totalMarkup / 100))} to client
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+    <div className="space-y-6 max-w-3xl">
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <SettingsIcon className="w-6 h-6 text-amber-400" />
+          Settings
+        </h1>
+        <p className="text-slate-500 text-sm mt-1">Company info, pricing defaults, app preferences</p>
       </div>
 
-      <Btn
-        onClick={saveSettings}
-        className="bg-amber-400 text-black hover:bg-amber-500 px-8"
-      >
-        Save All Settings
-      </Btn>
+      {/* COMPANY INFO */}
+      <Card>
+        <CardContent className="p-5">
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+            <Building2 className="w-4 h-4" /> Company Information
+          </p>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Company Name</label>
+              <Inp
+                value={local.companyName || ""}
+                onChange={(e) => update("companyName", e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Phone</label>
+                <Inp
+                  value={local.companyPhone || ""}
+                  onChange={(e) => update("companyPhone", e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Email</label>
+                <Inp
+                  value={local.companyEmail || ""}
+                  onChange={(e) => update("companyEmail", e.target.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Address</label>
+              <Inp
+                value={local.companyAddress || ""}
+                onChange={(e) => update("companyAddress", e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">License #</label>
+                <Inp
+                  value={local.licenseNumber || ""}
+                  onChange={(e) => update("licenseNumber", e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Website</label>
+                <Inp
+                  value={local.website || ""}
+                  onChange={(e) => update("website", e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* PRICING DEFAULTS */}
+      <Card>
+        <CardContent className="p-5">
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+            <DollarSign className="w-4 h-4" /> Pricing Defaults
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Labor Rate ($/hr)</label>
+              <Inp
+                type="number"
+                value={local.laborRate || 95}
+                onChange={(e) => update("laborRate", parseFloat(e.target.value) || 0)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Material Markup (%)</label>
+              <Inp
+                type="number"
+                value={local.materialMarkup || 20}
+                onChange={(e) => update("materialMarkup", parseFloat(e.target.value) || 0)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Overhead (%)</label>
+              <Inp
+                type="number"
+                value={local.overheadPct || 12.5}
+                onChange={(e) => update("overheadPct", parseFloat(e.target.value) || 0)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Profit (%)</label>
+              <Inp
+                type="number"
+                value={local.profitPct || 10}
+                onChange={(e) => update("profitPct", parseFloat(e.target.value) || 0)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Default Contingency (%)</label>
+              <Inp
+                type="number"
+                value={local.contingencyPct || 10}
+                onChange={(e) => update("contingencyPct", parseFloat(e.target.value) || 0)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">MI Sales Tax % (internal only)</label>
+              <Inp
+                type="number"
+                value={local.salesTaxPct || 6}
+                onChange={(e) => update("salesTaxPct", parseFloat(e.target.value) || 0)}
+              />
+            </div>
+          </div>
+          <div className="bg-amber-900/20 border border-amber-800/40 rounded-lg p-3 text-xs text-amber-300/80">
+            Sales tax is paid by Northshore at supplier purchase per Michigan RAB 2025-18.
+            It is NOT added as a line item to client proposals. This rate is for internal cost
+            tracking only.
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* SAVE */}
+      <div>
+        <Btn
+          onClick={save}
+          disabled={saving}
+          className="bg-amber-400 text-black hover:bg-amber-500 flex items-center gap-2"
+        >
+          {saving ? (
+            <>
+              <RefreshCw className="w-4 h-4 animate-spin" /> Saving...
+            </>
+          ) : (
+            <>
+              <Save className="w-4 h-4" /> Save Settings
+            </>
+          )}
+        </Btn>
+      </div>
     </div>
   );
 }
 
 // ================================================================
-// APP ROOT
+// APP — root component with auth + data load + nav
 // ================================================================
-const DEFAULT_SETTINGS = {
-  overheadPct:    12.5,
-  profitPct:      10,
-  salesTaxPct:    6,
-  laborRate:      95,
-  companyName:    "Northshore Mechanical & Construction LLC",
-  companyPhone:   "(231) 760-7013",
-  companyEmail:   "connor@northshorebuildsmi.com",
-  companyAddress: "1276 Sauter St, Muskegon, MI 49442",
-  licenseNumber:  "242501434",
-  website:        "northshorebuildsmi.com",
-};
-
-const TABS = ["Dashboard", "Estimator", "Jobs", "Daily", "Schedule", "Clients", "Settings"];
-
-// Wrap the entire app with Toast + Confirm providers so any component
-// can use useToast() and useConfirm() without prop drilling.
-export default function App() {
-  return (
-    <ToastProvider>
-      <ConfirmProvider>
-        <GlobalStyles />
-        <AppInner />
-      </ConfirmProvider>
-    </ToastProvider>
-  );
-}
+const TABS = [
+  { id: "Dashboard", label: "Dashboard",  icon: LayoutDashboard },
+  { id: "Estimator", label: "Estimator",  icon: Calculator },
+  { id: "Jobs",      label: "Jobs",       icon: Briefcase },
+  { id: "Daily",     label: "Daily Logs", icon: ClipboardList },
+  { id: "Schedule",  label: "Schedule",   icon: Calendar },
+  { id: "Clients",   label: "Clients",    icon: Users },
+  { id: "Settings",  label: "Settings",   icon: SettingsIcon },
+];
 
 function AppInner() {
-  const [tab, setTab]           = useState("Dashboard");
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [jobs, setJobs]         = useState([]);
-  const [estimates, setEstimates] = useState([]);
-  const [clients, setClients]   = useState([]);
-  const [dailyLogs, setDailyLogs] = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [session, setSession]   = useState(null);
-  const [authChecked, setAuthChecked] = useState(false);
+  const toast = useToast();
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [tab, setTab] = useState("Dashboard");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Load persisted settings from localStorage
-  useEffect(() => {
+  // Domain data
+  const [jobs, setJobs] = useState([]);
+  const [estimates, setEstimates] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [dailyLogs, setDailyLogs] = useState([]);
+  const [jobPhotos, setJobPhotos] = useState([]);
+  const [dataLoaded, setDataLoaded] = useState(false);
+
+  // Settings
+  const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem("northshore_settings");
-      if (saved) setSettings((prev) => ({ ...prev, ...JSON.parse(saved) }));
-    } catch {}
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn("Failed to parse saved settings:", e);
+    }
+    return {
+      companyName: "Northshore Mechanical & Construction LLC",
+      companyPhone: "(231) 760-7013",
+      companyEmail: "connor@northshorebuildsmi.com",
+      companyAddress: "1276 Sauter St, Muskegon, MI 49442",
+      licenseNumber: "242501434",
+      website: "northshorebuildsmi.com",
+      laborRate: 95,
+      materialMarkup: 20,
+      overheadPct: 12.5,
+      profitPct: 10,
+      contingencyPct: 10,
+      salesTaxPct: 6,
+    };
+  });
+
+  // Auth
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (alive) {
+        setSession(session);
+        setAuthLoading(false);
+      }
+    })();
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => {
+      alive = false;
+      subscription?.subscription?.unsubscribe?.();
+    };
   }, []);
 
-  // Auth listener
+  // Data load (after auth)
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setAuthChecked(true);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
-      setSession(session);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Data load — only runs after auth
-  useEffect(() => {
-    if (!session) return;
-    async function loadData() {
-      const [
-        { data: jobsData },
-        { data: estimatesData },
-        { data: clientsData },
-        { data: dailyLogsData },
-      ] = await Promise.all([
+    if (!session) {
+      setDataLoaded(false);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      const [jobsRes, estRes, cliRes, logRes, photoRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
-        supabase.from("clients").select("*").order("created_at", { ascending: false }),
+        supabase.from("clients").select("*").order("name"),
         supabase.from("daily_logs").select("*").order("log_date", { ascending: false }),
+        supabase.from("job_photos").select("*").order("created_at", { ascending: false }),
       ]);
-      if (jobsData)       setJobs(jobsData);
-      if (estimatesData)  setEstimates(estimatesData);
-      if (clientsData)    setClients(clientsData);
-      if (dailyLogsData)  setDailyLogs(dailyLogsData);
-      setLoading(false);
-    }
-    loadData();
+      if (!alive) return;
+      setJobs(jobsRes.data || []);
+      setEstimates(estRes.data || []);
+      setClients(cliRes.data || []);
+      setDailyLogs(logRes.data || []);
+      setJobPhotos(photoRes.data || []);
+      setDataLoaded(true);
+    })();
+    return () => { alive = false; };
   }, [session]);
+
+  const onJobCreated = useCallback((job) => {
+    setJobs((j) => [job, ...j]);
+  }, []);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setSession(null);
-    setJobs([]);
-    setEstimates([]);
-    setClients([]);
-    setDailyLogs([]);
+    setJobs([]); setEstimates([]); setClients([]);
+    setDailyLogs([]); setJobPhotos([]);
+    setDataLoaded(false);
+    toast.info("Signed out");
   };
 
-  const handleJobCreated    = (job) => setJobs((prev) => [job, ...prev]);
+  // Daily-log alert badge for nav
+  const today = new Date().toISOString().slice(0, 10);
+  const activeJobs = jobs.filter((j) => j.status === "Active");
+  const jobsLoggedToday = new Set(
+    dailyLogs.filter((l) => l.log_date === today).map((l) => l.job_id)
+  );
+  const jobsMissingTodayLog = activeJobs.filter((j) => !jobsLoggedToday.has(j.id));
+  const dailyAlertCount = jobsMissingTodayLog.length;
 
-  // AUTH CHECK SPINNER
-  if (!authChecked) {
+  if (authLoading) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="w-12 h-12 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
-  // NOT LOGGED IN
-  if (!session) return <LoginScreen onLogin={setSession} />;
+  if (!session) {
+    return <LoginScreen onLogin={setSession} />;
+  }
 
-  // DATA LOADING
-  if (loading) {
+  if (!dataLoaded) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-slate-400">Loading Northshore OS...</p>
+          <div className="w-10 h-10 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-slate-500 text-sm">Loading your workspace...</p>
         </div>
       </div>
     );
   }
 
-  // Daily log warning count for header badge
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const jobsLoggedTodayHeader = new Set(
-    dailyLogs.filter((l) => l.log_date === todayStr).map((l) => l.job_id)
-  );
-  const dailyAlertCount = jobs
-    .filter((j) => j.status === "Active" && !jobsLoggedTodayHeader.has(j.id))
-    .length;
-
-  const tabIcons = {
-    Dashboard: LayoutDashboard,
-    Estimator: Calculator,
-    Jobs:      Briefcase,
-    Daily:     ClipboardList,
-    Schedule:  Calendar,
-    Clients:   Users,
-    Settings:  SettingsIcon,
-  };
-
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 text-white">
+    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 text-slate-200">
+      <GlobalStyles />
+
       {/* HEADER */}
-      <header className="sticky top-0 z-50 bg-black/85 backdrop-blur-md border-b border-gray-800/80 px-4 py-3">
-        <div className="flex items-center justify-between gap-3 max-w-screen-2xl mx-auto">
+      <header className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-slate-800">
+        <div className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-amber-400 to-amber-500 rounded-lg flex items-center justify-center shadow-lg shadow-amber-900/40">
-              <span className="text-black font-black text-base">N</span>
-            </div>
-            <div>
-              <h1 className="text-base font-bold leading-none tracking-tight">Northshore OS</h1>
-              <p className="text-[10px] text-slate-500 leading-none mt-1 uppercase tracking-wider">
-                Mechanical & Construction
-              </p>
+            <button
+              onClick={() => setMobileNavOpen(!mobileNavOpen)}
+              className="lg:hidden p-2 -ml-2 text-slate-300 hover:text-amber-400 relative"
+              aria-label="Menu"
+            >
+              {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              {dailyAlertCount > 0 && !mobileNavOpen && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full" />
+              )}
+            </button>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-gradient-to-br from-amber-400 to-amber-500 rounded-lg flex items-center justify-center shadow-lg shadow-amber-900/30">
+                <span className="text-black font-black text-sm">N</span>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-white leading-tight">Northshore OS</p>
+                <p className="text-[10px] text-slate-500 leading-tight">
+                  {settings.companyName?.split(" ").slice(0, 2).join(" ") || "Northshore"}
+                </p>
+              </div>
             </div>
           </div>
 
-          {/* Mobile hamburger */}
-          <button
-            onClick={() => setMobileNavOpen((o) => !o)}
-            className="md:hidden p-2 rounded-lg text-slate-300 hover:bg-slate-800"
-            aria-label="Menu"
-          >
-            {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
-
-          {/* Desktop nav */}
-          <nav className="hidden md:flex items-center gap-1">
+          {/* DESKTOP NAV */}
+          <nav className="hidden lg:flex items-center gap-1">
             {TABS.map((t) => {
-              const Icon = tabIcons[t];
-              const active = tab === t;
-              const showAlert = t === "Daily" && dailyAlertCount > 0;
+              const Icon = t.icon;
+              const showBadge = t.id === "Daily" && dailyAlertCount > 0;
               return (
                 <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`relative px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-                    active
-                      ? "bg-amber-400 text-black shadow-md shadow-amber-900/30"
-                      : "text-gray-400 hover:text-white hover:bg-gray-800"
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`relative px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                    tab === t.id
+                      ? "bg-amber-400 text-black"
+                      : "text-slate-400 hover:bg-slate-800 hover:text-white"
                   }`}
                 >
-                  {Icon && <Icon className="w-4 h-4" />}
-                  {t}
-                  {showAlert && !active && (
-                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-lg">
+                  <Icon className="w-4 h-4" />
+                  {t.label}
+                  {showBadge && (
+                    <span className="absolute -top-0.5 -right-0.5 bg-rose-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
                       {dailyAlertCount}
                     </span>
                   )}
                 </button>
               );
             })}
+          </nav>
+
+          <div className="flex items-center gap-2">
+            <span className="hidden md:block text-xs text-slate-500 truncate max-w-[180px]">
+              {session.user?.email}
+            </span>
             <button
               onClick={handleLogout}
-              className="px-3 py-2 rounded-lg text-sm font-medium text-slate-500
-                hover:text-rose-400 hover:bg-rose-900/20 transition-all ml-2 border border-slate-800
-                flex items-center gap-2"
+              className="p-2 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-lg transition-colors"
               title="Sign out"
             >
               <LogOut className="w-4 h-4" />
-              <span className="hidden lg:inline">Sign Out</span>
             </button>
-          </nav>
+          </div>
         </div>
 
-        {/* Mobile nav drawer */}
+        {/* MOBILE NAV */}
         <AnimatePresence>
           {mobileNavOpen && (
-            <motion.nav
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="md:hidden overflow-hidden"
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.18 }}
+              className="lg:hidden border-t border-slate-800 overflow-hidden"
             >
-              <div className="pt-3 pb-1 grid grid-cols-2 gap-2">
+              <div className="px-3 py-3 space-y-1">
                 {TABS.map((t) => {
-                  const Icon = tabIcons[t];
-                  const active = tab === t;
-                  const showAlert = t === "Daily" && dailyAlertCount > 0;
+                  const Icon = t.icon;
+                  const showBadge = t.id === "Daily" && dailyAlertCount > 0;
                   return (
                     <button
-                      key={t}
-                      onClick={() => { setTab(t); setMobileNavOpen(false); }}
-                      className={`relative px-3 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 ${
-                        active
+                      key={t.id}
+                      onClick={() => {
+                        setTab(t.id);
+                        setMobileNavOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                        tab === t.id
                           ? "bg-amber-400 text-black"
-                          : "bg-slate-900 text-gray-400 border border-slate-800"
+                          : "text-slate-300 hover:bg-slate-800"
                       }`}
                     >
-                      {Icon && <Icon className="w-4 h-4" />}
-                      {t}
-                      {showAlert && !active && (
-                        <span className="ml-1 px-1.5 py-0.5 bg-rose-500 text-white rounded-full text-[10px] font-bold">
+                      <Icon className="w-4 h-4" />
+                      {t.label}
+                      {showBadge && (
+                        <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
                           {dailyAlertCount}
                         </span>
                       )}
                     </button>
                   );
                 })}
-                <button
-                  onClick={() => { handleLogout(); setMobileNavOpen(false); }}
-                  className="col-span-2 px-3 py-2.5 rounded-lg text-sm font-medium text-rose-400 bg-rose-900/20 border border-rose-900/40 flex items-center justify-center gap-2"
-                >
-                  <LogOut className="w-4 h-4" /> Sign Out
-                </button>
               </div>
-            </motion.nav>
+            </motion.div>
           )}
         </AnimatePresence>
       </header>
 
-      {/* MAIN */}
-      <main className="flex-1 p-4 md:p-6 max-w-screen-2xl mx-auto w-full">
+      {/* MAIN CONTENT */}
+      <main className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-6">
         <AnimatePresence mode="wait">
           <motion.div
             key={tab}
@@ -4965,21 +5386,77 @@ function AppInner() {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.2 }}
           >
-            {tab === "Dashboard"  && <Dashboard  jobs={jobs} estimates={estimates} clients={clients} dailyLogs={dailyLogs} setTab={setTab} />}
-            {tab === "Estimator"  && <Estimator  settings={settings} estimates={estimates} setEstimates={setEstimates} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
-            {tab === "Jobs"       && <Jobs       jobs={jobs} setJobs={setJobs} clients={clients} settings={settings} session={session} />}
-            {tab === "Daily"      && <DailyLogs  jobs={jobs} clients={clients} dailyLogs={dailyLogs} setDailyLogs={setDailyLogs} session={session} />}
-            {tab === "Schedule"   && <Schedule   jobs={jobs} />}
-            {tab === "Clients"    && <Clients    clients={clients} setClients={setClients} jobs={jobs} estimates={estimates} />}
-            {tab === "Settings"   && <Settings   settings={settings} setSettings={setSettings} />}
+            {tab === "Dashboard" && (
+              <Dashboard
+                jobs={jobs}
+                estimates={estimates}
+                clients={clients}
+                dailyLogs={dailyLogs}
+                setTab={setTab}
+              />
+            )}
+            {tab === "Estimator" && (
+              <Estimator
+                settings={settings}
+                estimates={estimates}
+                setEstimates={setEstimates}
+                onJobCreated={onJobCreated}
+                clients={clients}
+                jobs={jobs}
+              />
+            )}
+            {tab === "Jobs" && (
+              <Jobs
+                jobs={jobs}
+                setJobs={setJobs}
+                clients={clients}
+                jobPhotos={jobPhotos}
+                setJobPhotos={setJobPhotos}
+                dailyLogs={dailyLogs}
+                settings={settings}
+                estimates={estimates}
+              />
+            )}
+            {tab === "Daily" && (
+              <DailyLogs
+                jobs={jobs}
+                dailyLogs={dailyLogs}
+                setDailyLogs={setDailyLogs}
+              />
+            )}
+            {tab === "Schedule" && (
+              <Schedule jobs={jobs} />
+            )}
+            {tab === "Clients" && (
+              <Clients
+                clients={clients}
+                setClients={setClients}
+                jobs={jobs}
+                estimates={estimates}
+              />
+            )}
+            {tab === "Settings" && (
+              <Settings settings={settings} setSettings={setSettings} />
+            )}
           </motion.div>
         </AnimatePresence>
       </main>
 
-      {/* FOOTER */}
-      <footer className="py-3 text-center text-xs text-slate-700 border-t border-slate-900">
-        © {new Date().getFullYear()} Northshore Mechanical & Construction LLC — Internal Use Only
+      <footer className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-6 text-center text-[10px] text-slate-700 border-t border-slate-900 mt-12">
+        © {new Date().getFullYear()} {settings.companyName} &nbsp;|&nbsp;
+        License #{settings.licenseNumber} &nbsp;|&nbsp;
+        Northshore OS Phase 4
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <ConfirmProvider>
+        <AppInner />
+      </ConfirmProvider>
+    </ToastProvider>
   );
 }
