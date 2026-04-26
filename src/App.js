@@ -1,9 +1,33 @@
-import React, { useState, useEffect, createContext, useContext } from "react";
+import React, { useState, useEffect, createContext, useContext, useCallback, useRef } from "react";
 import {
   ResponsiveContainer, LineChart, Line,
   XAxis, YAxis, Tooltip, BarChart, Bar
 } from "recharts";
 import { supabase } from "./supabase";
+
+// ================================================================
+// NORTHSHORE OS — CHANGELOG
+// ================================================================
+// Phase 1: Core CRM, Supabase, Vercel deployment
+// Phase 2: Auth, custom domains, relational data, PDF proposals,
+//          change orders, sales tax compliance fix
+// Phase 3: Daily logs, photo uploads, punch list, material deliveries,
+//          job completion gating
+// CLEANUP PASS (Tier 1+2):
+//   - Toast notification system (replaces alerts)
+//   - ConfirmDialog system (replaces window.confirm)
+//   - Estimate edit/delete/duplicate
+//   - Lost status added to jobs and estimates
+//   - Change order form clears after generation
+//   - Client delete cascade warning
+//   - Loading spinners on async actions
+//   - Empty-state action prompts
+//   - Wider desktop layout (max-w-screen-2xl)
+//   - Archive view filter
+//   - Estimates state lifted to App (fixes Dashboard staleness)
+//   - useCallback wrapping (fixes stale closures)
+//   - Session refresh listener
+// ================================================================
 
 // ================================================================
 // COMPANY HELPER
@@ -56,9 +80,10 @@ const formatPhone = (phone) => {
 const statusColor = (s) => {
   const v = (s || "").toLowerCase();
   if (v === "approved" || v === "active")    return "text-emerald-400";
-  if (v === "rejected" || v === "overdue")   return "text-rose-400";
+  if (v === "rejected" || v === "overdue" || v === "lost") return "text-rose-400";
   if (v === "sent"     || v === "estimating") return "text-yellow-300";
   if (v === "completed")                      return "text-blue-400";
+  if (v === "paused")                         return "text-slate-400";
   return "text-slate-300";
 };
 
@@ -173,6 +198,166 @@ function TabsTrigger({ value, children }) {
 function TabsContent({ value, children }) {
   const { value: cur } = useContext(TabsCtx);
   return cur === value ? <div>{children}</div> : null;
+}
+
+// ================================================================
+// TOAST NOTIFICATION SYSTEM
+// Replaces alert() — non-blocking, auto-dismissing notifications
+// Usage: const toast = useToast(); toast.success("Saved!");
+// ================================================================
+const ToastContext = createContext({
+  toasts: [],
+  toast: { success: () => {}, error: () => {}, info: () => {}, warn: () => {} },
+});
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+
+  const dismiss = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const push = useCallback((type, message, duration = 3500) => {
+    const id = Math.random().toString(36).slice(2, 10);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    if (duration > 0) {
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, duration);
+    }
+    return id;
+  }, []);
+
+  const toast = {
+    success: (msg, dur) => push("success", msg, dur),
+    error:   (msg, dur) => push("error",   msg, dur ?? 5000),
+    info:    (msg, dur) => push("info",    msg, dur),
+    warn:    (msg, dur) => push("warn",    msg, dur ?? 4500),
+  };
+
+  const styles = {
+    success: "bg-emerald-900/90 border-emerald-600 text-emerald-100",
+    error:   "bg-rose-900/90 border-rose-600 text-rose-100",
+    info:    "bg-slate-900/90 border-slate-600 text-slate-100",
+    warn:    "bg-amber-900/90 border-amber-600 text-amber-100",
+  };
+
+  const icons = {
+    success: "✓",
+    error:   "✕",
+    info:    "ℹ",
+    warn:    "⚠",
+  };
+
+  return (
+    <ToastContext.Provider value={{ toasts, toast }}>
+      {children}
+      <div className="fixed top-4 right-4 z-[1000] flex flex-col gap-2 max-w-sm pointer-events-none">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`pointer-events-auto px-4 py-3 rounded-lg border-2 shadow-xl backdrop-blur-md
+              flex items-start gap-3 animate-[slideIn_0.2s_ease-out] ${styles[t.type]}`}
+          >
+            <span className="text-lg leading-none mt-0.5">{icons[t.type]}</span>
+            <p className="flex-1 text-sm">{t.message}</p>
+            <button
+              onClick={() => dismiss(t.id)}
+              className="text-lg leading-none opacity-60 hover:opacity-100"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+    </ToastContext.Provider>
+  );
+}
+
+function useToast() {
+  return useContext(ToastContext).toast;
+}
+
+// ================================================================
+// CONFIRMATION DIALOG SYSTEM
+// Replaces window.confirm — branded modal with custom messaging
+// Usage: const confirm = useConfirm(); const ok = await confirm({title, message, danger: true});
+// ================================================================
+const ConfirmContext = createContext({ confirm: async () => false });
+
+function ConfirmProvider({ children }) {
+  const [state, setState] = useState(null);
+  // state shape: { title, message, confirmText, cancelText, danger, resolve }
+
+  const confirm = useCallback((opts) => {
+    return new Promise((resolve) => {
+      setState({
+        title:       opts.title       || "Are you sure?",
+        message:     opts.message     || "",
+        confirmText: opts.confirmText || "Confirm",
+        cancelText:  opts.cancelText  || "Cancel",
+        danger:      opts.danger      || false,
+        details:     opts.details     || null,
+        resolve,
+      });
+    });
+  }, []);
+
+  const handleClose = (result) => {
+    if (state?.resolve) state.resolve(result);
+    setState(null);
+  };
+
+  return (
+    <ConfirmContext.Provider value={{ confirm }}>
+      {children}
+      {state && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={() => handleClose(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className={`text-lg font-bold mb-2 ${state.danger ? "text-rose-300" : "text-slate-100"}`}>
+              {state.danger && "⚠ "}{state.title}
+            </h3>
+            {state.message && (
+              <p className="text-slate-400 text-sm mb-3 whitespace-pre-line">{state.message}</p>
+            )}
+            {state.details && (
+              <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-3 mb-4 text-xs text-slate-300 max-h-40 overflow-y-auto">
+                {state.details}
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => handleClose(false)}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+              >
+                {state.cancelText}
+              </button>
+              <button
+                onClick={() => handleClose(true)}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                  state.danger
+                    ? "bg-rose-600 text-white hover:bg-rose-500"
+                    : "bg-amber-400 text-black hover:bg-amber-500"
+                }`}
+              >
+                {state.confirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </ConfirmContext.Provider>
+  );
+}
+
+function useConfirm() {
+  return useContext(ConfirmContext).confirm;
 }
 
 // ================================================================
@@ -1040,7 +1225,28 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
             Active Jobs — Burn Rate
           </h2>
           {activeJobs.length === 0 && (
-            <p className="text-slate-600 text-sm">No active jobs.</p>
+            <div className="py-6 text-center">
+              <p className="text-slate-500 text-sm mb-2">No active jobs yet.</p>
+              {estimates.filter((e) => e.status === "Approved").length > 0 ? (
+                <p className="text-slate-600 text-xs">
+                  You have approved estimates ready to start.
+                </p>
+              ) : openEst.length > 0 ? (
+                <button
+                  onClick={() => setTab && setTab("Estimator")}
+                  className="text-amber-400 hover:text-amber-300 text-xs font-medium underline"
+                >
+                  Approve a draft estimate to start your first job →
+                </button>
+              ) : (
+                <button
+                  onClick={() => setTab && setTab("Estimator")}
+                  className="text-amber-400 hover:text-amber-300 text-xs font-medium underline"
+                >
+                  Build your first estimate →
+                </button>
+              )}
+            </div>
           )}
           <div className="space-y-4">
             {activeJobs.map((j) => {
@@ -1083,7 +1289,15 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
             Recent Estimates
           </h2>
           {estimates.length === 0 && (
-            <p className="text-slate-600 text-sm">No estimates yet.</p>
+            <div className="py-4 text-center">
+              <p className="text-slate-500 text-sm mb-2">No estimates yet.</p>
+              <button
+                onClick={() => setTab && setTab("Estimator")}
+                className="text-amber-400 hover:text-amber-300 text-xs font-medium underline"
+              >
+                Build your first estimate →
+              </button>
+            </div>
           )}
           <div className="space-y-2">
             {estimates.slice(0, 5).map((e) => (
@@ -1123,7 +1337,9 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
 // ================================================================
 // ESTIMATOR
 // ================================================================
-function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
+function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, jobs }) {
+  const toast    = useToast();
+  const confirm  = useConfirm();
   const [tab, setTab]                     = useState("Materials");
   const [estName, setEstName]             = useState("New Estimate");
   const [selectedClientId, setSelectedClientId] = useState("");
@@ -1145,7 +1361,9 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
   const [fees, setFees]                   = useState(0);
   const [discount, setDiscount]           = useState(0);
   const [saving, setSaving]               = useState(false);
-  const [savedEstimates, setSavedEstimates] = useState([]);
+  const [editingId, setEditingId]         = useState(null);   // null = new, id = editing existing
+  const [estFilter, setEstFilter]         = useState("All");  // saved-list filter
+  const [estSearch, setEstSearch]         = useState("");     // saved-list search
 
   // Material form
   const [mName, setMName] = useState("");
@@ -1157,13 +1375,8 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
   const [lRate,  setLRate]  = useState("");
   const [lHours, setLHours] = useState("");
 
-  useEffect(() => {
-    supabase
-      .from("estimates")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => { if (data) setSavedEstimates(data); });
-  }, []);
+  // savedEstimates is now derived from parent state (fixes Dashboard staleness)
+  const savedEstimates = estimates;
 
   const addMat = () => {
     const cost = parseFloat(mCost);
@@ -1216,50 +1429,193 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
       profit_pct:    settings.profitPct   || 10,
     };
 
+    if (editingId) {
+      // UPDATE existing estimate
+      const { data, error } = await supabase
+        .from("estimates")
+        .update(payload)
+        .eq("id", editingId)
+        .select()
+        .single();
+      if (!error && data) {
+        setEstimates((prev) => prev.map((e) => (e.id === data.id ? data : e)));
+        toast.success(`Estimate updated as ${status}`);
+        if (status === "Approved") {
+          const { data: job } = await supabase
+            .from("jobs")
+            .insert({
+              name:      estName,
+              status:    "Active",
+              budget:    grandTotal,
+              actual:    0,
+              client_id: selectedClientId || null,
+            })
+            .select()
+            .single();
+          if (job) {
+            onJobCreated(job);
+            toast.success("Job created from approved estimate");
+          }
+        }
+      } else {
+        toast.error("Update failed: " + (error?.message || "Unknown error"));
+      }
+    } else {
+      // INSERT new estimate
+      const { data, error } = await supabase
+        .from("estimates")
+        .insert(payload)
+        .select()
+        .single();
+      if (!error && data) {
+        setEstimates((prev) => [data, ...prev]);
+        setEditingId(data.id);  // now we're editing this one
+        toast.success(`Saved as ${status}`);
+        if (status === "Approved") {
+          const { data: job } = await supabase
+            .from("jobs")
+            .insert({
+              name:      estName,
+              status:    "Active",
+              budget:    grandTotal,
+              actual:    0,
+              client_id: selectedClientId || null,
+            })
+            .select()
+            .single();
+          if (job) {
+            onJobCreated(job);
+            toast.success("Job created from approved estimate");
+          }
+        }
+      } else {
+        toast.error("Save failed: " + (error?.message || "Unknown error"));
+      }
+    }
+    setSaving(false);
+  };
+
+  // Reset form to blank state (for "New Estimate" button)
+  const resetForm = () => {
+    setEditingId(null);
+    setEstName("New Estimate");
+    setSelectedClientId("");
+    setSelectedJobId("");
+    setScopeOfWork("");
+    setProjectAddress("");
+    setEstimatedWeeks(4);
+    setMaterials([]);
+    setLabor([]);
+    setContingencyPct(10);
+    setFees(0);
+    setDiscount(0);
+    setTab("Materials");
+  };
+
+  // Load an existing estimate into the editor
+  const loadEstimate = (est) => {
+    setEditingId(est.id);
+    setEstName(est.name || "");
+    setSelectedClientId(est.client_id || "");
+    setSelectedJobId(est.job_id || "");
+    setScopeOfWork(est.scope_of_work || "");
+    setProjectAddress(est.project_address || "");
+    setEstimatedWeeks(est.estimated_weeks || 4);
+    setExclusionsText(est.exclusions || exclusionsText);
+    setMaterials(Array.isArray(est.materials) ? est.materials : []);
+    setLabor(Array.isArray(est.labor) ? est.labor : []);
+    setContingencyPct(est.contingency_pct || 10);
+    toast.info(`Loaded "${est.name}" for editing`);
+    // scroll to top so user sees they're editing
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // Duplicate an existing estimate as a new draft
+  const duplicateEstimate = async (est) => {
+    const ok = await confirm({
+      title: "Duplicate this estimate?",
+      message: `A new draft will be created as a copy of "${est.name}". You can then edit it independently.`,
+      confirmText: "Duplicate",
+    });
+    if (!ok) return;
+    const { id, created_at, ...rest } = est;
+    const payload = {
+      ...rest,
+      name: `${est.name} (Copy)`,
+      status: "Draft",
+    };
     const { data, error } = await supabase
       .from("estimates")
       .insert(payload)
       .select()
       .single();
-
     if (!error && data) {
-      setSavedEstimates((prev) => [data, ...prev]);
-      onEstimateSaved(data);
-      if (status === "Approved") {
-        const { data: job } = await supabase
-          .from("jobs")
-          .insert({
-            name:      estName,
-            status:    "Active",
-            budget:    grandTotal,
-            actual:    0,
-            client_id: selectedClientId || null,
-          })
-          .select()
-          .single();
-        if (job) onJobCreated(job);
-      }
-      alert(`Saved as ${status}${status === "Approved" ? " — Job created!" : ""}`);
+      setEstimates((prev) => [data, ...prev]);
+      toast.success("Estimate duplicated");
     } else {
-      alert("Error saving: " + error?.message);
+      toast.error("Duplicate failed: " + (error?.message || "Unknown error"));
     }
-    setSaving(false);
   };
 
-  const handleGenerateProposal = (est) => {
+  // Delete an estimate
+  const deleteEstimate = async (est) => {
+    const ok = await confirm({
+      title: "Delete this estimate?",
+      message: `This will permanently delete "${est.name}" (${currency(est.grand_total)}). This cannot be undone.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("estimates").delete().eq("id", est.id);
+    if (!error) {
+      setEstimates((prev) => prev.filter((e) => e.id !== est.id));
+      // If we were editing the one we just deleted, reset form
+      if (editingId === est.id) resetForm();
+      toast.success("Estimate deleted");
+    } else {
+      toast.error("Delete failed: " + error.message);
+    }
+  };
+
+  // Update estimate status from the saved list (e.g. mark Lost)
+  const updateEstimateStatus = async (est, newStatus) => {
+    const { data, error } = await supabase
+      .from("estimates")
+      .update({ status: newStatus })
+      .eq("id", est.id)
+      .select()
+      .single();
+    if (!error && data) {
+      setEstimates((prev) => prev.map((e) => (e.id === data.id ? data : e)));
+      toast.success(`Status updated to ${newStatus}`);
+    } else {
+      toast.error("Status update failed: " + (error?.message || "Unknown error"));
+    }
+  };
+
+
+  const handleGenerateProposal = async (est) => {
     if (!est.grand_total || Number(est.grand_total) === 0) {
-      alert("This estimate has $0 total. Add materials and labor before generating a proposal.");
+      toast.error("This estimate has $0 total. Add materials and labor first.");
       return;
     }
     if (!est.name || est.name === "New Estimate") {
-      if (!window.confirm(`This estimate is still named "${est.name || "(blank)"}". The client will see this as the project name on the proposal. Continue anyway?`)) {
-        return;
-      }
+      const ok = await confirm({
+        title: "Estimate name not set",
+        message: `This estimate is still named "${est.name || "(blank)"}". The client will see this as the project name on the proposal.`,
+        confirmText: "Generate Anyway",
+        cancelText: "Go Back",
+      });
+      if (!ok) return;
     }
     if (!est.scope_of_work || !est.scope_of_work.trim()) {
-      if (!window.confirm("This estimate has no scope of work. Generating a proposal without scope is not recommended. Continue anyway?")) {
-        return;
-      }
+      const ok = await confirm({
+        title: "No scope of work",
+        message: "Generating a proposal without scope is not recommended. Clients trust contractors who clearly describe what they're doing.",
+        confirmText: "Generate Anyway",
+        cancelText: "Go Back",
+      });
+      if (!ok) return;
     }
     // Detect unfilled template placeholders
     const placeholderPhrases = [
@@ -1271,11 +1627,15 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
       (est.scope_of_work || "").includes(p)
     );
     if (unfilled.length > 0) {
-      if (!window.confirm(
-        `Your scope still contains template placeholder text:\n\n• ${unfilled.join("\n• ")}\n\nThe client will see this exactly as written. Continue anyway?`
-      )) {
-        return;
-      }
+      const ok = await confirm({
+        title: "Scope contains template placeholders",
+        message: "Your scope still has unfilled template text. The client will see this exactly as written.",
+        details: unfilled.map((u) => `• ${u}`).join("\n"),
+        confirmText: "Generate Anyway",
+        cancelText: "Go Back",
+        danger: true,
+      });
+      if (!ok) return;
     }
     const client = clients.find((c) => c.id === est.client_id) || null;
     openProposal(est, client, settings);
@@ -1325,12 +1685,30 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
       {/* HEADER ROW */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Estimator</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold">Estimator</h1>
+            {editingId && (
+              <span className="px-2 py-0.5 bg-amber-400/20 text-amber-300 text-xs font-semibold rounded border border-amber-700">
+                Editing existing
+              </span>
+            )}
+          </div>
           <p className="text-slate-500 text-sm mt-1">
-            Build material + labor estimates with automatic markup
+            {editingId
+              ? "You're editing a saved estimate. Changes will update the original."
+              : "Build material + labor estimates with automatic markup"}
           </p>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
+          {editingId && (
+            <Btn
+              onClick={resetForm}
+              className="bg-slate-800 hover:bg-slate-700 text-xs"
+              title="Discard changes and start a new estimate"
+            >
+              + New Estimate
+            </Btn>
+          )}
           <Inp
             value={estName}
             onChange={(e) => setEstName(e.target.value)}
@@ -1338,13 +1716,13 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
             placeholder="Estimate name"
           />
           <Btn onClick={() => saveEst("Draft")} disabled={saving} className="bg-slate-700">
-            Save Draft
+            {saving ? "Saving..." : editingId ? "Update Draft" : "Save Draft"}
           </Btn>
           <Btn onClick={() => saveEst("Sent")} disabled={saving} className="bg-blue-700 hover:bg-blue-600">
-            Mark Sent
+            {saving ? "Saving..." : "Mark Sent"}
           </Btn>
           <Btn onClick={() => saveEst("Approved")} disabled={saving} className="bg-emerald-600 hover:bg-emerald-500">
-            Approve → Job
+            {saving ? "Saving..." : "Approve → Job"}
           </Btn>
         </div>
       </div>
@@ -1411,8 +1789,15 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
               </label>
               <button
                 type="button"
-                onClick={() => {
-                  if (scopeOfWork.trim() && !window.confirm("This will replace your current scope. Continue?")) return;
+                onClick={async () => {
+                  if (scopeOfWork.trim()) {
+                    const ok = await confirm({
+                      title: "Replace current scope?",
+                      message: "This will replace what you've written with the template starter text.",
+                      confirmText: "Replace",
+                    });
+                    if (!ok) return;
+                  }
                   setScopeOfWork(
                     "PROJECT OVERVIEW:\n" +
                     "Brief description of what we're building or improving for the client.\n\n" +
@@ -1731,45 +2116,159 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
           {/* SAVED ESTIMATES */}
           <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">
-                Saved Estimates ({savedEstimates.length})
-              </p>
-              <div className="space-y-2 max-h-72 overflow-y-auto">
-                {savedEstimates.map((e) => {
-                  const estClient = clients.find((c) => c.id === e.client_id);
-                  return (
-                  <div key={e.id} className="text-xs py-1.5 border-b border-slate-800 last:border-0">
-                    <div className="flex justify-between items-center">
-                      <div className="min-w-0 mr-2">
-                        <p className="text-slate-300 truncate">{e.name}</p>
-                        {estClient && (
-                          <p className="text-slate-600 text-[10px] truncate">{estClient.name}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="text-amber-400 font-medium">{currency(e.grand_total)}</span>
-                        <Badge
-                          label={e.status}
-                          color={
-                            e.status === "Approved" ? "green" :
-                            e.status === "Sent"     ? "yellow" : "gray"
-                          }
-                        />
-                      </div>
-                    </div>
-                    <Btn
-                      onClick={() => handleGenerateProposal(e)}
-                      className="mt-1.5 w-full text-xs py-1 bg-amber-400/10 text-amber-400
-                        hover:bg-amber-400/20 border border-amber-900/30"
-                    >
-                      📄 Generate Proposal
-                    </Btn>
-                  </div>
-                  );
-                })}
-                {savedEstimates.length === 0 && (
-                  <p className="text-slate-600 text-xs">No saved estimates</p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs text-slate-500 uppercase tracking-wider">
+                  Saved Estimates ({savedEstimates.length})
+                </p>
+                {editingId && (
+                  <button
+                    onClick={resetForm}
+                    className="text-xs text-amber-400 hover:text-amber-300"
+                    title="Clear form to start a new estimate"
+                  >
+                    + New
+                  </button>
                 )}
+              </div>
+
+              {/* FILTER + SEARCH */}
+              {savedEstimates.length > 3 && (
+                <div className="space-y-2 mb-3">
+                  <Inp
+                    placeholder="Search by name or client..."
+                    value={estSearch}
+                    onChange={(e) => setEstSearch(e.target.value)}
+                    className="text-xs py-1.5"
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    {["All", "Draft", "Sent", "Approved", "Lost"].map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setEstFilter(f)}
+                        className={`text-[10px] px-2 py-1 rounded border ${
+                          estFilter === f
+                            ? "bg-amber-400 text-black border-amber-400"
+                            : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+                        }`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {(() => {
+                  const filtered = savedEstimates.filter((e) => {
+                    if (estFilter !== "All" && e.status !== estFilter) return false;
+                    if (estSearch.trim()) {
+                      const q = estSearch.toLowerCase();
+                      const cliName = clients.find((c) => c.id === e.client_id)?.name?.toLowerCase() || "";
+                      if (!e.name?.toLowerCase().includes(q) && !cliName.includes(q)) return false;
+                    }
+                    return true;
+                  });
+
+                  if (savedEstimates.length === 0) {
+                    return (
+                      <div className="py-6 text-center">
+                        <p className="text-slate-600 text-xs mb-1">No estimates yet</p>
+                        <p className="text-slate-700 text-[10px]">
+                          Build one above and save to get started
+                        </p>
+                      </div>
+                    );
+                  }
+                  if (filtered.length === 0) {
+                    return (
+                      <p className="text-slate-600 text-xs text-center py-4">
+                        No estimates match your filter
+                      </p>
+                    );
+                  }
+
+                  return filtered.map((e) => {
+                    const estClient = clients.find((c) => c.id === e.client_id);
+                    const isEditing = editingId === e.id;
+                    return (
+                      <div
+                        key={e.id}
+                        className={`text-xs py-2 px-2 rounded border transition-all ${
+                          isEditing
+                            ? "border-amber-500 bg-amber-900/10"
+                            : "border-slate-800 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex justify-between items-center gap-2 mb-1">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-slate-200 truncate font-medium">{e.name}</p>
+                            {estClient && (
+                              <p className="text-slate-600 text-[10px] truncate">{estClient.name}</p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-amber-400 font-semibold">{currency(e.grand_total)}</span>
+                            <Badge
+                              label={e.status}
+                              color={
+                                e.status === "Approved" ? "green" :
+                                e.status === "Sent"     ? "yellow" :
+                                e.status === "Lost"     ? "red" : "gray"
+                              }
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          <button
+                            onClick={() => handleGenerateProposal(e)}
+                            className="flex-1 text-[10px] py-1 px-2 bg-amber-400/10 text-amber-400 hover:bg-amber-400/20 border border-amber-900/30 rounded"
+                            title="Generate PDF Proposal"
+                          >
+                            📄 PDF
+                          </button>
+                          <button
+                            onClick={() => loadEstimate(e)}
+                            disabled={isEditing}
+                            className={`text-[10px] py-1 px-2 rounded border ${
+                              isEditing
+                                ? "bg-slate-800 text-slate-600 border-slate-800 cursor-not-allowed"
+                                : "bg-blue-900/20 text-blue-300 hover:bg-blue-900/40 border-blue-900/40"
+                            }`}
+                            title={isEditing ? "Currently editing" : "Edit this estimate"}
+                          >
+                            ✏ Edit
+                          </button>
+                          <button
+                            onClick={() => duplicateEstimate(e)}
+                            className="text-[10px] py-1 px-2 bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 rounded"
+                            title="Duplicate as new draft"
+                          >
+                            ⎘
+                          </button>
+                          <select
+                            value={e.status}
+                            onChange={(ev) => updateEstimateStatus(e, ev.target.value)}
+                            className="text-[10px] py-1 px-1 bg-slate-900 text-slate-300 border border-slate-700 rounded"
+                            title="Change status"
+                          >
+                            {["Draft", "Sent", "Approved", "Lost"].map((s) => (
+                              <option key={s}>{s}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => deleteEstimate(e)}
+                            className="text-[10px] py-1 px-2 bg-rose-900/20 text-rose-400 hover:bg-rose-900/40 border border-rose-900/40 rounded"
+                            title="Delete permanently"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </CardContent>
           </Card>
@@ -1783,6 +2282,8 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
 // JOB OPERATIONS — Punch List + Material Deliveries + Photos per Job
 // ================================================================
 function JobOperations({ job, updateJob, session }) {
+  const toast    = useToast();
+  const confirm  = useConfirm();
   const [section, setSection] = useState("punch");
   const [punchItems, setPunchItems]     = useState([]);
   const [deliveries, setDeliveries]     = useState([]);
@@ -1850,8 +2351,9 @@ function JobOperations({ job, updateJob, session }) {
     if (!error && data) {
       setPunchItems((prev) => [...prev, data]);
       setNewPunch("");
+      toast.success("Punch item added");
     } else if (error) {
-      alert("Error adding punch item: " + error.message);
+      toast.error("Failed to add punch item: " + error.message);
     }
   };
 
@@ -1870,19 +2372,28 @@ function JobOperations({ job, updateJob, session }) {
       .single();
     if (!error && data) {
       setPunchItems((prev) => prev.map((p) => (p.id === data.id ? data : p)));
+    } else if (error) {
+      toast.error("Update failed: " + error.message);
     }
   };
 
-  const deletePunchItem = async (id) => {
-    if (!window.confirm("Delete this punch item?")) return;
-    await supabase.from("punch_list").delete().eq("id", id);
-    setPunchItems((prev) => prev.filter((p) => p.id !== id));
+  const deletePunchItem = async (item) => {
+    const ok = await confirm({
+      title: "Delete punch item?",
+      message: `"${item.item}" will be permanently removed.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    await supabase.from("punch_list").delete().eq("id", item.id);
+    setPunchItems((prev) => prev.filter((p) => p.id !== item.id));
+    toast.success("Punch item removed");
   };
 
   // DELIVERY handlers
   const addDelivery = async (e) => {
     e?.stopPropagation?.();
-    if (!delDesc.trim()) { alert("Description required."); return; }
+    if (!delDesc.trim()) { toast.error("Description required"); return; }
     const today = new Date().toISOString().slice(0, 10);
     const { data, error } = await supabase
       .from("material_deliveries")
@@ -1901,8 +2412,9 @@ function JobOperations({ job, updateJob, session }) {
     if (!error && data) {
       setDeliveries((prev) => [data, ...prev]);
       setDelDesc(""); setDelSupplier(""); setDelQty(""); setDelCost(""); setDelExpected("");
+      toast.success("Delivery tracked");
     } else if (error) {
-      alert("Error adding delivery: " + error.message);
+      toast.error("Failed to add delivery: " + error.message);
     }
   };
 
@@ -1919,32 +2431,54 @@ function JobOperations({ job, updateJob, session }) {
       .single();
     if (!error && data) {
       setDeliveries((prev) => prev.map((d) => (d.id === data.id ? data : d)));
+    } else if (error) {
+      toast.error("Status update failed: " + error.message);
     }
   };
 
-  const deleteDelivery = async (id) => {
-    if (!window.confirm("Delete this delivery record?")) return;
-    await supabase.from("material_deliveries").delete().eq("id", id);
-    setDeliveries((prev) => prev.filter((d) => d.id !== id));
+  const deleteDelivery = async (delivery) => {
+    const ok = await confirm({
+      title: "Delete delivery record?",
+      message: `"${delivery.description}" will be permanently removed from this job's delivery log.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    await supabase.from("material_deliveries").delete().eq("id", delivery.id);
+    setDeliveries((prev) => prev.filter((d) => d.id !== delivery.id));
+    toast.success("Delivery removed");
   };
 
   // PHOTO delete
   const deletePhoto = async (photo) => {
-    if (!window.confirm("Delete this photo permanently?")) return;
+    const ok = await confirm({
+      title: "Delete this photo?",
+      message: "The photo will be permanently removed from storage. This cannot be undone.",
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     await supabase.storage.from("job-photos").remove([photo.storage_path]);
     await supabase.from("job_photos").delete().eq("id", photo.id);
     setPhotoRefresh((x) => x + 1);
+    toast.success("Photo deleted");
   };
 
   // MARK COMPLETE — gated by punch list completion
   const markJobComplete = async (e) => {
     e?.stopPropagation?.();
     if (!allComplete) {
-      alert("Cannot mark job complete — punch list still has open items.");
+      toast.error("Cannot mark job complete — punch list still has open items");
       return;
     }
-    if (!window.confirm(`Mark "${job.name}" as Completed? This will move it out of active job tracking.`)) return;
+    const ok = await confirm({
+      title: "Mark job complete?",
+      message: `"${job.name}" will move out of active tracking and into the Archive view. You can still view all data, but it won't appear in active dashboards.`,
+      confirmText: "Mark Complete",
+    });
+    if (!ok) return;
     await updateJob(job.id, { status: "Completed" });
+    toast.success(`"${job.name}" marked complete`);
   };
 
   const punchCategories = ["general", "electrical", "plumbing", "drywall", "paint", "trim", "cleanup", "inspection"];
@@ -2084,7 +2618,7 @@ function JobOperations({ job, updateJob, session }) {
                   <span className="text-xs text-slate-600">{formatDate(item.completed_at)}</span>
                 )}
                 <button
-                  onClick={() => deletePunchItem(item.id)}
+                  onClick={() => deletePunchItem(item)}
                   className="text-slate-600 hover:text-rose-400 text-xs px-1"
                   title="Delete"
                 >
@@ -2170,7 +2704,7 @@ function JobOperations({ job, updateJob, session }) {
                         )}
                       </div>
                     </div>
-                    <button onClick={() => deleteDelivery(d.id)} className="text-slate-600 hover:text-rose-400 text-xs">
+                    <button onClick={() => deleteDelivery(d)} className="text-slate-600 hover:text-rose-400 text-xs">
                       ✕
                     </button>
                   </div>
@@ -2218,6 +2752,8 @@ function JobOperations({ job, updateJob, session }) {
 // JOBS
 // ================================================================
 function Jobs({ jobs, setJobs, clients, settings, session }) {
+  const toast    = useToast();
+  const confirm  = useConfirm();
   const [name, setName]                   = useState("");
   const [budget, setBudget]               = useState("");
   const [status, setStatus]               = useState("Active");
@@ -2232,7 +2768,10 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
   const [coAmount, setCoAmount] = useState("");
 
   const addJob = async () => {
-    if (!name || !budget) return;
+    if (!name || !budget) {
+      toast.error("Job name and budget are required");
+      return;
+    }
     setLoading(true);
     const { data, error } = await supabase
       .from("jobs")
@@ -2246,20 +2785,41 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
       })
       .select()
       .single();
-    if (!error && data) setJobs((j) => [data, ...j]);
-    setName(""); setBudget(""); setSelectedClientId("");
+    if (!error && data) {
+      setJobs((j) => [data, ...j]);
+      toast.success(`Job "${name}" added`);
+      setName(""); setBudget(""); setSelectedClientId("");
+    } else {
+      toast.error("Failed to add job: " + (error?.message || "Unknown error"));
+    }
     setLoading(false);
   };
 
-  const updateJob = async (id, patch) => {
-    await supabase.from("jobs").update(patch).eq("id", id);
+  // useCallback prevents stale closures in JobOperations child components
+  const updateJob = useCallback(async (id, patch) => {
+    const { error } = await supabase.from("jobs").update(patch).eq("id", id);
+    if (error) {
+      toast.error("Update failed: " + error.message);
+      return;
+    }
     setJobs((j) => j.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  };
+  }, [setJobs, toast]);
 
-  const removeJob = async (id) => {
-    if (!window.confirm("Remove this job?")) return;
-    await supabase.from("jobs").delete().eq("id", id);
-    setJobs((j) => j.filter((x) => x.id !== id));
+  const removeJob = async (job) => {
+    const ok = await confirm({
+      title: "Remove this job?",
+      message: `This will permanently delete "${job.name}" and ALL associated data: punch list items, material deliveries, photos, and daily logs.`,
+      confirmText: "Delete Job",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("jobs").delete().eq("id", job.id);
+    if (error) {
+      toast.error("Delete failed: " + error.message);
+      return;
+    }
+    setJobs((j) => j.filter((x) => x.id !== job.id));
+    toast.success("Job removed");
   };
 
   const getClientName = (id) => {
@@ -2269,19 +2829,33 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
 
   const handleGenerateCO = (job) => {
     if (!coDesc.trim() || !coAmount) {
-      alert("Enter a description and amount before generating the change order.");
+      toast.error("Enter a description and amount before generating the change order");
+      return;
+    }
+    const amount = parseFloat(coAmount);
+    if (isNaN(amount) || amount === 0) {
+      toast.error("Change order amount must be a non-zero number");
       return;
     }
     const client = clients.find((c) => c.id === job.client_id) || null;
     openChangeOrder(
       job, client,
-      { description: coDesc, amount: parseFloat(coAmount) },
+      { description: coDesc, amount },
       settings,
       job.budget || 0
     );
+    // CLEAR FORM after generation so next CO doesn't have stale data
+    setCoJobId(null);
+    setCoDesc("");
+    setCoAmount("");
+    toast.success("Change order generated");
   };
 
-  const filtered = jobs.filter((j) => filter === "All" || j.status === filter);
+  const filtered = jobs.filter((j) => {
+    if (filter === "All")     return j.status !== "Completed" && j.status !== "Lost";
+    if (filter === "Archive") return j.status === "Completed" || j.status === "Lost";
+    return j.status === filter;
+  });
 
   return (
     <div className="space-y-6">
@@ -2292,7 +2866,7 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
           onChange={(e) => setFilter(e.target.value)}
           className="w-40"
         >
-          {["All", "Active", "Estimating", "Paused", "Completed"].map((f) => (
+          {["All", "Active", "Estimating", "Paused", "Completed", "Lost", "Archive"].map((f) => (
             <option key={f}>{f}</option>
           ))}
         </Sel>
@@ -2316,7 +2890,7 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
               onChange={(e) => setBudget(e.target.value)}
             />
             <Sel value={status} onChange={(e) => setStatus(e.target.value)}>
-              {["Active", "Estimating", "Paused", "Completed"].map((s) => (
+              {["Active", "Estimating", "Paused", "Completed", "Lost"].map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </Sel>
@@ -2390,7 +2964,7 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
                             onChange={(e) => updateJob(j.id, { status: e.target.value })}
                             className={`bg-transparent text-sm ${statusColor(j.status)}`}
                           >
-                            {["Active", "Estimating", "Paused", "Completed"].map((s) => (
+                            {["Active", "Estimating", "Paused", "Completed", "Lost"].map((s) => (
                               <option key={s}>{s}</option>
                             ))}
                           </select>
@@ -2420,7 +2994,7 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
                         </td>
                         <td className="py-3 px-4 text-right">
                           <Btn
-                            onClick={(e) => { e.stopPropagation(); removeJob(j.id); }}
+                            onClick={(e) => { e.stopPropagation(); removeJob(j); }}
                             className="text-xs py-1 px-2 bg-slate-900"
                           >
                             Remove
@@ -2532,9 +3106,9 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
 // ================================================================
 // CLIENTS
 // ================================================================
-function Clients({ jobs, estimates }) {
-  const [clients, setClients]     = useState([]);
-  const [loading, setLoading]     = useState(true);
+function Clients({ clients, setClients, jobs, estimates }) {
+  const toast    = useToast();
+  const confirm  = useConfirm();
   const [name, setName]           = useState("");
   const [email, setEmail]         = useState("");
   const [phone, setPhone]         = useState("");
@@ -2542,34 +3116,68 @@ function Clients({ jobs, estimates }) {
   const [notes, setNotes]         = useState("");
   const [filter, setFilter]       = useState("All");
   const [expandedId, setExpandedId] = useState(null);
-
-  useEffect(() => {
-    supabase
-      .from("clients")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => { if (data) setClients(data); setLoading(false); });
-  }, []);
+  const [saving, setSaving]       = useState(false);
 
   const addClient = async () => {
-    if (!name) return;
+    if (!name.trim()) {
+      toast.error("Client name is required");
+      return;
+    }
+    setSaving(true);
     const { data, error } = await supabase
       .from("clients")
       .insert({ name, email, phone, company, notes, status: "Prospect" })
       .select()
       .single();
-    if (!error && data) setClients((c) => [data, ...c]);
-    setName(""); setEmail(""); setPhone(""); setCompany(""); setNotes("");
+    if (!error && data) {
+      setClients((c) => [data, ...c]);
+      setName(""); setEmail(""); setPhone(""); setCompany(""); setNotes("");
+      toast.success(`Client "${name}" added`);
+    } else {
+      toast.error("Failed to add client: " + (error?.message || "Unknown error"));
+    }
+    setSaving(false);
   };
 
   const updateClient = async (id, patch) => {
-    await supabase.from("clients").update(patch).eq("id", id);
+    const { error } = await supabase.from("clients").update(patch).eq("id", id);
+    if (error) {
+      toast.error("Update failed: " + error.message);
+      return;
+    }
     setClients((c) => c.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   };
 
-  const removeClient = async (id) => {
-    await supabase.from("clients").delete().eq("id", id);
-    setClients((c) => c.filter((x) => x.id !== id));
+  const removeClient = async (client) => {
+    const linkedJobs = jobs.filter((j) => j.client_id === client.id);
+    const linkedEsts = estimates.filter((e) => e.client_id === client.id);
+
+    let message = `"${client.name}" will be permanently deleted.`;
+    let details = null;
+
+    if (linkedJobs.length > 0 || linkedEsts.length > 0) {
+      message = `"${client.name}" will be permanently deleted.\n\nLinked records will lose their client connection but will NOT be deleted:`;
+      const jobLines = linkedJobs.map((j) => `• Job: ${j.name} (${j.status})`).join("\n");
+      const estLines = linkedEsts.map((e) => `• Estimate: ${e.name} — ${currency(e.grand_total)}`).join("\n");
+      details = [jobLines, estLines].filter(Boolean).join("\n");
+    }
+
+    const ok = await confirm({
+      title: "Delete this client?",
+      message,
+      details,
+      confirmText: "Delete Client",
+      danger: true,
+    });
+    if (!ok) return;
+
+    const { error } = await supabase.from("clients").delete().eq("id", client.id);
+    if (error) {
+      toast.error("Delete failed: " + error.message);
+      return;
+    }
+    setClients((c) => c.filter((x) => x.id !== client.id));
+    toast.success(`"${client.name}" deleted`);
   };
 
   const filtered        = clients.filter((c) => filter === "All" || c.status === filter);
@@ -2614,7 +3222,7 @@ function Clients({ jobs, estimates }) {
       {/* CLIENTS TABLE */}
       <Card>
         <CardContent className="p-0">
-          {loading ? <Spinner /> : (
+          {(
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -2673,7 +3281,7 @@ function Clients({ jobs, estimates }) {
                           </td>
                           <td className="py-3 px-4 text-right">
                             <Btn
-                              onClick={(e) => { e.stopPropagation(); removeClient(c.id); }}
+                              onClick={(e) => { e.stopPropagation(); removeClient(c); }}
                               className="text-xs py-1 px-2 bg-slate-900"
                             >
                               Remove
@@ -2777,6 +3385,8 @@ function Clients({ jobs, estimates }) {
 // SCHEDULE
 // ================================================================
 function Schedule({ jobs }) {
+  const toast    = useToast();
+  const confirm  = useConfirm();
   const [events, setEvents]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [title, setTitle]     = useState("");
@@ -2792,25 +3402,44 @@ function Schedule({ jobs }) {
   }, []);
 
   const addEvent = async () => {
-    if (!title || !date) return;
+    if (!title.trim() || !date) {
+      toast.error("Title and date are required");
+      return;
+    }
     const { data, error } = await supabase
       .from("schedule")
       .insert({ title, job: job || "General", date, status: "Active", type: "Task" })
       .select()
       .single();
-    if (!error && data)
+    if (!error && data) {
       setEvents((e) => [...e, data].sort((a, b) => new Date(a.date) - new Date(b.date)));
-    setTitle("");
+      setTitle("");
+      toast.success("Event added");
+    } else if (error) {
+      toast.error("Failed to add event: " + error.message);
+    }
   };
 
   const updateEvent = async (id, patch) => {
-    await supabase.from("schedule").update(patch).eq("id", id);
+    const { error } = await supabase.from("schedule").update(patch).eq("id", id);
+    if (error) {
+      toast.error("Update failed: " + error.message);
+      return;
+    }
     setEvents((e) => e.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   };
 
-  const removeEvent = async (id) => {
-    await supabase.from("schedule").delete().eq("id", id);
-    setEvents((e) => e.filter((x) => x.id !== id));
+  const removeEvent = async (event) => {
+    const ok = await confirm({
+      title: "Delete event?",
+      message: `"${event.title}" will be permanently removed from the schedule.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    await supabase.from("schedule").delete().eq("id", event.id);
+    setEvents((e) => e.filter((x) => x.id !== event.id));
+    toast.success("Event removed");
   };
 
   const today    = new Date().toISOString().slice(0, 10);
@@ -2852,7 +3481,7 @@ function Schedule({ jobs }) {
                 </td>
                 <td className="py-2 text-right">
                   <Btn
-                    onClick={() => removeEvent(e.id)}
+                    onClick={() => removeEvent(e)}
                     className="text-xs py-1 px-2 bg-slate-900"
                   >
                     ✕
@@ -2918,6 +3547,7 @@ function Schedule({ jobs }) {
 // PHOTO UPLOADER (used by Daily Logs and Job views)
 // ================================================================
 function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact = false }) {
+  const toast = useToast();
   const [uploading, setUploading] = useState(false);
   const [phase, setPhase] = useState("during");
   const [caption, setCaption] = useState("");
@@ -2956,11 +3586,14 @@ function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact 
     if (!files || files.length === 0) return;
     setUploading(true);
     const uploadedBy = session?.user?.email || "unknown";
+    let successCount = 0;
+    let failCount = 0;
 
     try {
       for (const file of Array.from(files)) {
         if (!file.type.startsWith("image/")) {
-          alert(`Skipped ${file.name} — not an image.`);
+          toast.warn(`Skipped ${file.name} — not an image`);
+          failCount++;
           continue;
         }
 
@@ -2977,7 +3610,8 @@ function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact 
           });
 
         if (uploadErr) {
-          alert(`Upload failed for ${file.name}: ${uploadErr.message}`);
+          toast.error(`Upload failed: ${uploadErr.message}`);
+          failCount++;
           continue;
         }
 
@@ -2991,14 +3625,20 @@ function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact 
         });
 
         if (insertErr) {
-          alert(`Photo metadata save failed: ${insertErr.message}`);
+          toast.error(`Save failed: ${insertErr.message}`);
+          failCount++;
+        } else {
+          successCount++;
         }
       }
 
       setCaption("");
+      if (successCount > 0) {
+        toast.success(`${successCount} photo${successCount > 1 ? "s" : ""} uploaded`);
+      }
       if (onUploaded) onUploaded();
     } catch (err) {
-      alert("Upload error: " + err.message);
+      toast.error("Upload error: " + err.message);
     } finally {
       setUploading(false);
     }
@@ -3137,6 +3777,8 @@ function PhotoGallery({ photos, onDelete, compact = false }) {
 // DAILY LOGS
 // ================================================================
 function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
+  const toast    = useToast();
+  const confirm  = useConfirm();
   const today = new Date().toISOString().slice(0, 10);
   const [selectedJobId, setSelectedJobId] = useState("");
   const [logDate, setLogDate]             = useState(today);
@@ -3228,9 +3870,9 @@ function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
   };
 
   const saveLog = async () => {
-    if (!selectedJobId) { alert("Select a job first."); return; }
+    if (!selectedJobId) { toast.error("Select a job first"); return; }
     if (!workPerformed.trim()) {
-      alert("Work Performed is required. Describe what was done today.");
+      toast.error("Work Performed is required — describe what was done today");
       return;
     }
 
@@ -3263,9 +3905,9 @@ function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
 
       if (!error && data) {
         setDailyLogs((prev) => prev.map((l) => (l.id === data.id ? data : l)));
-        alert("Log updated.");
+        toast.success("Log updated");
       } else {
-        alert("Update failed: " + error?.message);
+        toast.error("Update failed: " + (error?.message || "Unknown error"));
       }
     } else {
       const { data, error } = await supabase
@@ -3277,9 +3919,9 @@ function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
       if (!error && data) {
         setDailyLogs((prev) => [data, ...prev]);
         setEditingLogId(data.id);
-        alert("Log saved.");
+        toast.success("Log saved — you can now attach photos");
       } else {
-        alert("Save failed: " + error?.message);
+        toast.error("Save failed: " + (error?.message || "Unknown error"));
       }
     }
 
@@ -3287,10 +3929,17 @@ function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
   };
 
   const deletePhoto = async (photo) => {
-    if (!window.confirm("Delete this photo permanently?")) return;
+    const ok = await confirm({
+      title: "Delete this photo?",
+      message: "The photo will be permanently removed from storage.",
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     await supabase.storage.from("job-photos").remove([photo.storage_path]);
     await supabase.from("job_photos").delete().eq("id", photo.id);
     setPhotoRefresh((x) => x + 1);
+    toast.success("Photo deleted");
   };
 
   const selectedJob = jobs.find((j) => j.id === selectedJobId);
@@ -3611,6 +4260,7 @@ function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
 // SETTINGS
 // ================================================================
 function Settings({ settings, setSettings }) {
+  const toast = useToast();
   const [form, setForm] = useState({ ...settings });
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -3625,7 +4275,7 @@ function Settings({ settings, setSettings }) {
     };
     setSettings(saved);
     localStorage.setItem("northshore_settings", JSON.stringify(saved));
-    alert("Settings saved.");
+    toast.success("Settings saved");
   };
 
   const totalMarkup =
@@ -3748,7 +4398,19 @@ const DEFAULT_SETTINGS = {
 
 const TABS = ["Dashboard", "Estimator", "Jobs", "Daily", "Schedule", "Clients", "Settings"];
 
+// Wrap the entire app with Toast + Confirm providers so any component
+// can use useToast() and useConfirm() without prop drilling.
 export default function App() {
+  return (
+    <ToastProvider>
+      <ConfirmProvider>
+        <AppInner />
+      </ConfirmProvider>
+    </ToastProvider>
+  );
+}
+
+function AppInner() {
   const [tab, setTab]           = useState("Dashboard");
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [jobs, setJobs]         = useState([]);
@@ -3812,7 +4474,6 @@ export default function App() {
     setDailyLogs([]);
   };
 
-  const handleEstimateSaved = (est) => setEstimates((prev) => [est, ...prev]);
   const handleJobCreated    = (job) => setJobs((prev) => [job, ...prev]);
 
   // AUTH CHECK SPINNER
@@ -3879,13 +4540,13 @@ export default function App() {
       </header>
 
       {/* MAIN */}
-      <main className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
+      <main className="flex-1 p-4 md:p-6 max-w-screen-2xl mx-auto w-full">
         {tab === "Dashboard"  && <Dashboard  jobs={jobs} estimates={estimates} clients={clients} dailyLogs={dailyLogs} setTab={setTab} />}
-        {tab === "Estimator"  && <Estimator  settings={settings} onEstimateSaved={handleEstimateSaved} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
+        {tab === "Estimator"  && <Estimator  settings={settings} estimates={estimates} setEstimates={setEstimates} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
         {tab === "Jobs"       && <Jobs       jobs={jobs} setJobs={setJobs} clients={clients} settings={settings} session={session} />}
         {tab === "Daily"      && <DailyLogs  jobs={jobs} clients={clients} dailyLogs={dailyLogs} setDailyLogs={setDailyLogs} session={session} />}
         {tab === "Schedule"   && <Schedule   jobs={jobs} />}
-        {tab === "Clients"    && <Clients    jobs={jobs} estimates={estimates} />}
+        {tab === "Clients"    && <Clients    clients={clients} setClients={setClients} jobs={jobs} estimates={estimates} />}
         {tab === "Settings"   && <Settings   settings={settings} setSettings={setSettings} />}
       </main>
 
