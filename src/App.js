@@ -878,12 +878,19 @@ function LoginScreen({ onLogin }) {
 // ================================================================
 // DASHBOARD
 // ================================================================
-function Dashboard({ jobs, estimates, clients }) {
+function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
   const activeJobs  = jobs.filter((j) => j.status === "Active");
   const openEst     = estimates.filter((e) => e.status === "Draft" || e.status === "Sent");
   const approvedEst = estimates.filter((e) => e.status === "Approved");
   const arTotal     = approvedEst.reduce((s, e) => s + (e.grand_total || 0), 0);
   const pipeline    = openEst.reduce((s, e) => s + (e.grand_total || 0), 0);
+
+  // Daily log tracking — find active jobs missing today's log
+  const today = new Date().toISOString().slice(0, 10);
+  const jobsLoggedToday = new Set(
+    dailyLogs.filter((l) => l.log_date === today).map((l) => l.job_id)
+  );
+  const jobsMissingTodayLog = activeJobs.filter((j) => !jobsLoggedToday.has(j.id));
 
   const graphData = estimates.slice(-10).map((e) => ({
     name:  formatDate(e.created_at),
@@ -911,6 +918,34 @@ function Dashboard({ jobs, estimates, clients }) {
           })}
         </span>
       </div>
+
+      {/* DAILY LOG WARNING BANNER */}
+      {jobsMissingTodayLog.length > 0 && (
+        <div
+          onClick={() => setTab && setTab("Daily")}
+          className="cursor-pointer bg-gradient-to-r from-amber-900/40 to-amber-800/20 border-2 border-amber-500/60 rounded-xl p-4 hover:from-amber-900/50 hover:to-amber-800/30 transition-all"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-amber-500 rounded-lg flex items-center justify-center text-black font-black text-xl shrink-0">
+                !
+              </div>
+              <div>
+                <p className="text-amber-300 font-semibold text-sm">
+                  {jobsMissingTodayLog.length} active {jobsMissingTodayLog.length === 1 ? "job needs" : "jobs need"} today's log
+                </p>
+                <p className="text-amber-200/70 text-xs mt-0.5">
+                  {jobsMissingTodayLog.slice(0, 3).map((j) => j.name).join(" • ")}
+                  {jobsMissingTodayLog.length > 3 && ` • +${jobsMissingTodayLog.length - 3} more`}
+                </p>
+              </div>
+            </div>
+            <span className="text-amber-300 text-sm font-medium shrink-0">
+              Log Now →
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* KPI CARDS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1745,9 +1780,444 @@ function Estimator({ settings, onEstimateSaved, onJobCreated, clients, jobs }) {
 }
 
 // ================================================================
+// JOB OPERATIONS — Punch List + Material Deliveries + Photos per Job
+// ================================================================
+function JobOperations({ job, updateJob, session }) {
+  const [section, setSection] = useState("punch");
+  const [punchItems, setPunchItems]     = useState([]);
+  const [deliveries, setDeliveries]     = useState([]);
+  const [jobPhotos, setJobPhotos]       = useState([]);
+  const [loaded, setLoaded]             = useState(false);
+
+  // Punch list form
+  const [newPunch, setNewPunch]         = useState("");
+  const [newPunchCat, setNewPunchCat]   = useState("general");
+
+  // Delivery form
+  const [delDesc, setDelDesc]           = useState("");
+  const [delSupplier, setDelSupplier]   = useState("");
+  const [delQty, setDelQty]             = useState("");
+  const [delCost, setDelCost]           = useState("");
+  const [delExpected, setDelExpected]   = useState("");
+
+  const [photoRefresh, setPhotoRefresh] = useState(0);
+
+  // Load punch + deliveries + photos once when this job's panel opens
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [
+        { data: pData },
+        { data: dData },
+        { data: phData },
+      ] = await Promise.all([
+        supabase.from("punch_list").select("*").eq("job_id", job.id).order("created_at", { ascending: true }),
+        supabase.from("material_deliveries").select("*").eq("job_id", job.id).order("created_at", { ascending: false }),
+        supabase.from("job_photos").select("*").eq("job_id", job.id).order("created_at", { ascending: false }),
+      ]);
+      if (cancelled) return;
+      setPunchItems(pData || []);
+      setDeliveries(dData || []);
+      setJobPhotos(phData || []);
+      setLoaded(true);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [job.id, photoRefresh]);
+
+  const totalPunch     = punchItems.length;
+  const completedPunch = punchItems.filter((p) => p.completed).length;
+  const punchPct       = totalPunch > 0 ? (completedPunch / totalPunch) * 100 : 0;
+  const allComplete    = totalPunch > 0 && completedPunch === totalPunch;
+
+  // Deliveries summary
+  const pendingDeliveries = deliveries.filter((d) => d.status === "ordered" || d.status === "in_transit").length;
+  const overdueDeliveries = deliveries.filter((d) => {
+    if (d.status === "delivered" || d.status === "installed") return false;
+    if (!d.expected_date) return false;
+    return new Date(d.expected_date) < new Date(new Date().toISOString().slice(0, 10));
+  }).length;
+
+  // PUNCH LIST handlers
+  const addPunchItem = async (e) => {
+    e?.stopPropagation?.();
+    if (!newPunch.trim()) return;
+    const { data, error } = await supabase
+      .from("punch_list")
+      .insert({ job_id: job.id, item: newPunch, category: newPunchCat, completed: false })
+      .select()
+      .single();
+    if (!error && data) {
+      setPunchItems((prev) => [...prev, data]);
+      setNewPunch("");
+    } else if (error) {
+      alert("Error adding punch item: " + error.message);
+    }
+  };
+
+  const togglePunchItem = async (item) => {
+    const newCompleted = !item.completed;
+    const updates = {
+      completed: newCompleted,
+      completed_at: newCompleted ? new Date().toISOString() : null,
+      completed_by: newCompleted ? (session?.user?.email || "unknown") : null,
+    };
+    const { data, error } = await supabase
+      .from("punch_list")
+      .update(updates)
+      .eq("id", item.id)
+      .select()
+      .single();
+    if (!error && data) {
+      setPunchItems((prev) => prev.map((p) => (p.id === data.id ? data : p)));
+    }
+  };
+
+  const deletePunchItem = async (id) => {
+    if (!window.confirm("Delete this punch item?")) return;
+    await supabase.from("punch_list").delete().eq("id", id);
+    setPunchItems((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  // DELIVERY handlers
+  const addDelivery = async (e) => {
+    e?.stopPropagation?.();
+    if (!delDesc.trim()) { alert("Description required."); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabase
+      .from("material_deliveries")
+      .insert({
+        job_id: job.id,
+        description: delDesc,
+        supplier: delSupplier || null,
+        quantity: delQty || null,
+        cost: parseFloat(delCost) || 0,
+        status: "ordered",
+        ordered_date: today,
+        expected_date: delExpected || null,
+      })
+      .select()
+      .single();
+    if (!error && data) {
+      setDeliveries((prev) => [data, ...prev]);
+      setDelDesc(""); setDelSupplier(""); setDelQty(""); setDelCost(""); setDelExpected("");
+    } else if (error) {
+      alert("Error adding delivery: " + error.message);
+    }
+  };
+
+  const updateDeliveryStatus = async (id, newStatus) => {
+    const updates = { status: newStatus };
+    if (newStatus === "delivered" || newStatus === "installed") {
+      updates.delivered_date = new Date().toISOString().slice(0, 10);
+    }
+    const { data, error } = await supabase
+      .from("material_deliveries")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+    if (!error && data) {
+      setDeliveries((prev) => prev.map((d) => (d.id === data.id ? data : d)));
+    }
+  };
+
+  const deleteDelivery = async (id) => {
+    if (!window.confirm("Delete this delivery record?")) return;
+    await supabase.from("material_deliveries").delete().eq("id", id);
+    setDeliveries((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  // PHOTO delete
+  const deletePhoto = async (photo) => {
+    if (!window.confirm("Delete this photo permanently?")) return;
+    await supabase.storage.from("job-photos").remove([photo.storage_path]);
+    await supabase.from("job_photos").delete().eq("id", photo.id);
+    setPhotoRefresh((x) => x + 1);
+  };
+
+  // MARK COMPLETE — gated by punch list completion
+  const markJobComplete = async (e) => {
+    e?.stopPropagation?.();
+    if (!allComplete) {
+      alert("Cannot mark job complete — punch list still has open items.");
+      return;
+    }
+    if (!window.confirm(`Mark "${job.name}" as Completed? This will move it out of active job tracking.`)) return;
+    await updateJob(job.id, { status: "Completed" });
+  };
+
+  const punchCategories = ["general", "electrical", "plumbing", "drywall", "paint", "trim", "cleanup", "inspection"];
+  const catColors = {
+    general:    "bg-slate-800 text-slate-300",
+    electrical: "bg-yellow-900/50 text-yellow-300",
+    plumbing:   "bg-blue-900/50 text-blue-300",
+    drywall:    "bg-purple-900/50 text-purple-300",
+    paint:      "bg-pink-900/50 text-pink-300",
+    trim:       "bg-orange-900/50 text-orange-300",
+    cleanup:    "bg-emerald-900/50 text-emerald-300",
+    inspection: "bg-rose-900/50 text-rose-300",
+  };
+
+  const statusColors = {
+    ordered:    "bg-slate-800 text-slate-300 border-slate-700",
+    in_transit: "bg-yellow-900/50 text-yellow-300 border-yellow-700",
+    delivered:  "bg-blue-900/50 text-blue-300 border-blue-700",
+    installed:  "bg-emerald-900/50 text-emerald-300 border-emerald-700",
+  };
+
+  return (
+    <div className="pt-4 mt-4 border-t border-slate-800" onClick={(e) => e.stopPropagation()}>
+      {/* TAB NAV */}
+      <div className="flex flex-wrap gap-2 mb-4 items-center justify-between">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: "punch",      label: "Punch List",         count: totalPunch > 0 ? `${completedPunch}/${totalPunch}` : "0" },
+            { key: "deliveries", label: "Material Deliveries", count: deliveries.length, badge: overdueDeliveries },
+            { key: "photos",     label: "Photos",              count: jobPhotos.length },
+          ].map((s) => (
+            <button
+              key={s.key}
+              onClick={(e) => { e.stopPropagation(); setSection(s.key); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                section === s.key
+                  ? "bg-amber-400 text-black border-amber-400"
+                  : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+              }`}
+            >
+              {s.label} <span className="opacity-70">({s.count})</span>
+              {s.badge > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 bg-rose-500 text-white rounded-full text-[10px]">
+                  {s.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* MARK COMPLETE BUTTON — gated */}
+        {job.status === "Active" && (
+          <button
+            onClick={markJobComplete}
+            disabled={!allComplete}
+            className={`px-4 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              allComplete
+                ? "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
+                : "bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed"
+            }`}
+            title={allComplete ? "Mark this job complete" : "Complete all punch list items first"}
+          >
+            {allComplete ? "✓ Mark Job Complete" : `🔒 Punch list ${completedPunch}/${totalPunch}`}
+          </button>
+        )}
+      </div>
+
+      {/* PUNCH LIST */}
+      {section === "punch" && (
+        <div>
+          {totalPunch > 0 && (
+            <div className="mb-3">
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-500">Completion</span>
+                <span className={allComplete ? "text-emerald-400" : "text-slate-400"}>
+                  {round2(punchPct)}% — {completedPunch} of {totalPunch}
+                </span>
+              </div>
+              <div className="w-full bg-slate-800 h-1.5 rounded-full">
+                <div
+                  className={`h-1.5 rounded-full ${allComplete ? "bg-emerald-500" : "bg-amber-400"}`}
+                  style={{ width: `${punchPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Add new punch item */}
+          <div className="flex flex-wrap gap-2 mb-3">
+            <Inp
+              value={newPunch}
+              onChange={(e) => setNewPunch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addPunchItem(e)}
+              placeholder="e.g. Touch up paint above kitchen window"
+              className="flex-1 min-w-[200px]"
+            />
+            <Sel value={newPunchCat} onChange={(e) => setNewPunchCat(e.target.value)} className="w-32">
+              {punchCategories.map((c) => (
+                <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+              ))}
+            </Sel>
+            <Btn onClick={addPunchItem} className="bg-amber-400 text-black hover:bg-amber-500 text-xs">
+              + Add Item
+            </Btn>
+          </div>
+
+          {/* Items list */}
+          {!loaded && <p className="text-xs text-slate-600">Loading...</p>}
+          {loaded && punchItems.length === 0 && (
+            <p className="text-xs text-slate-600 italic">
+              No punch items yet. Add items as you find them. Job cannot be marked complete until every item is checked off.
+            </p>
+          )}
+          <div className="space-y-1.5">
+            {punchItems.map((item) => (
+              <div
+                key={item.id}
+                className={`flex items-center gap-2 p-2 rounded border transition-all ${
+                  item.completed
+                    ? "bg-emerald-900/10 border-emerald-900/40"
+                    : "bg-slate-900/40 border-slate-800"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={item.completed}
+                  onChange={() => togglePunchItem(item)}
+                  className="accent-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <span className={`text-xs px-1.5 py-0.5 rounded uppercase tracking-wider ${catColors[item.category] || catColors.general}`}>
+                  {item.category}
+                </span>
+                <span className={`flex-1 text-sm ${item.completed ? "text-slate-500 line-through" : "text-slate-200"}`}>
+                  {item.item}
+                </span>
+                {item.completed && item.completed_at && (
+                  <span className="text-xs text-slate-600">{formatDate(item.completed_at)}</span>
+                )}
+                <button
+                  onClick={() => deletePunchItem(item.id)}
+                  className="text-slate-600 hover:text-rose-400 text-xs px-1"
+                  title="Delete"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* MATERIAL DELIVERIES */}
+      {section === "deliveries" && (
+        <div>
+          {/* Summary */}
+          {deliveries.length > 0 && (
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <div className="bg-slate-900/40 border border-slate-800 rounded p-2 text-center">
+                <p className="text-xs text-slate-500">Total</p>
+                <p className="text-lg font-bold text-slate-200">{deliveries.length}</p>
+              </div>
+              <div className="bg-slate-900/40 border border-slate-800 rounded p-2 text-center">
+                <p className="text-xs text-slate-500">Pending</p>
+                <p className="text-lg font-bold text-yellow-400">{pendingDeliveries}</p>
+              </div>
+              <div className="bg-slate-900/40 border border-slate-800 rounded p-2 text-center">
+                <p className="text-xs text-slate-500">Overdue</p>
+                <p className={`text-lg font-bold ${overdueDeliveries > 0 ? "text-rose-400" : "text-slate-300"}`}>
+                  {overdueDeliveries}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Add delivery */}
+          <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 mb-3 space-y-2">
+            <p className="text-xs text-slate-500 uppercase tracking-wider">Add Delivery</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <Inp value={delDesc} onChange={(e) => setDelDesc(e.target.value)} placeholder="Description (e.g. 12 sheets 1/2 drywall)" />
+              <Inp value={delSupplier} onChange={(e) => setDelSupplier(e.target.value)} placeholder="Supplier (Menards, 84 Lumber...)" />
+              <Inp value={delQty} onChange={(e) => setDelQty(e.target.value)} placeholder="Quantity" />
+              <Inp type="number" value={delCost} onChange={(e) => setDelCost(e.target.value)} placeholder="Cost $" />
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Expected Delivery</label>
+                <Inp type="date" value={delExpected} onChange={(e) => setDelExpected(e.target.value)} />
+              </div>
+              <div className="flex items-end">
+                <Btn onClick={addDelivery} className="w-full bg-amber-400 text-black hover:bg-amber-500 text-xs">
+                  + Add Delivery
+                </Btn>
+              </div>
+            </div>
+          </div>
+
+          {/* Deliveries list */}
+          {!loaded && <p className="text-xs text-slate-600">Loading...</p>}
+          {loaded && deliveries.length === 0 && (
+            <p className="text-xs text-slate-600 italic">
+              No deliveries tracked. Add as you place orders so nothing slips through.
+            </p>
+          )}
+          <div className="space-y-1.5">
+            {deliveries.map((d) => {
+              const isOverdue = d.expected_date &&
+                (d.status === "ordered" || d.status === "in_transit") &&
+                new Date(d.expected_date) < new Date(new Date().toISOString().slice(0, 10));
+              return (
+                <div
+                  key={d.id}
+                  className={`p-2 rounded border ${isOverdue ? "border-rose-700/50 bg-rose-900/10" : "border-slate-800 bg-slate-900/40"}`}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-slate-200 text-sm font-medium">{d.description}</p>
+                      <div className="flex flex-wrap gap-x-3 text-xs text-slate-500 mt-0.5">
+                        {d.supplier && <span>{d.supplier}</span>}
+                        {d.quantity && <span>Qty: {d.quantity}</span>}
+                        {d.cost > 0 && <span className="text-amber-400">{currency(d.cost)}</span>}
+                        {d.expected_date && (
+                          <span className={isOverdue ? "text-rose-400 font-semibold" : ""}>
+                            Expected: {formatDate(d.expected_date)} {isOverdue && "⚠ OVERDUE"}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button onClick={() => deleteDelivery(d.id)} className="text-slate-600 hover:text-rose-400 text-xs">
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {["ordered", "in_transit", "delivered", "installed"].map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => updateDeliveryStatus(d.id, s)}
+                        className={`px-2 py-0.5 rounded text-[10px] uppercase tracking-wider border ${
+                          d.status === s ? statusColors[s] : "bg-transparent text-slate-600 border-slate-800 hover:border-slate-600"
+                        }`}
+                      >
+                        {s.replace("_", " ")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* PHOTOS */}
+      {section === "photos" && (
+        <div>
+          <PhotoUploader
+            jobId={job.id}
+            session={session}
+            onUploaded={() => setPhotoRefresh((x) => x + 1)}
+          />
+          <div className="mt-3">
+            {!loaded && <p className="text-xs text-slate-600">Loading...</p>}
+            {loaded && (
+              <PhotoGallery photos={jobPhotos} onDelete={deletePhoto} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ================================================================
 // JOBS
 // ================================================================
-function Jobs({ jobs, setJobs, clients, settings }) {
+function Jobs({ jobs, setJobs, clients, settings, session }) {
   const [name, setName]                   = useState("");
   const [budget, setBudget]               = useState("");
   const [status, setStatus]               = useState("Active");
@@ -2030,6 +2500,13 @@ function Jobs({ jobs, setJobs, clients, settings }) {
                                 </div>
                               </div>
                             </div>
+
+                            {/* JOB OPERATIONS — Punch List + Material Deliveries + Photos */}
+                            <JobOperations
+                              job={j}
+                              updateJob={updateJob}
+                              session={session}
+                            />
                           </td>
                         </tr>
                       )}
@@ -2438,6 +2915,699 @@ function Schedule({ jobs }) {
 }
 
 // ================================================================
+// PHOTO UPLOADER (used by Daily Logs and Job views)
+// ================================================================
+function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact = false }) {
+  const [uploading, setUploading] = useState(false);
+  const [phase, setPhase] = useState("during");
+  const [caption, setCaption] = useState("");
+
+  const compressImage = (file, maxWidth = 1600, quality = 0.82) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob(
+            (blob) => blob ? resolve(blob) : reject(new Error("Compression failed")),
+            "image/jpeg",
+            quality
+          );
+        };
+        img.onerror = reject;
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleFiles = async (files) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    const uploadedBy = session?.user?.email || "unknown";
+
+    try {
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) {
+          alert(`Skipped ${file.name} — not an image.`);
+          continue;
+        }
+
+        const compressed = await compressImage(file);
+        const ext = "jpg";
+        const filename = `${jobId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+        const { error: uploadErr } = await supabase.storage
+          .from("job-photos")
+          .upload(filename, compressed, {
+            cacheControl: "3600",
+            contentType: "image/jpeg",
+            upsert: false,
+          });
+
+        if (uploadErr) {
+          alert(`Upload failed for ${file.name}: ${uploadErr.message}`);
+          continue;
+        }
+
+        const { error: insertErr } = await supabase.from("job_photos").insert({
+          job_id: jobId,
+          daily_log_id: dailyLogId,
+          storage_path: filename,
+          phase,
+          caption: caption || null,
+          uploaded_by: uploadedBy,
+        });
+
+        if (insertErr) {
+          alert(`Photo metadata save failed: ${insertErr.message}`);
+        }
+      }
+
+      setCaption("");
+      if (onUploaded) onUploaded();
+    } catch (err) {
+      alert("Upload error: " + err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className={`bg-slate-900/60 border border-slate-700 rounded-lg ${compact ? "p-2" : "p-3"}`}>
+      <div className={`flex flex-wrap items-center gap-2 ${compact ? "" : "mb-2"}`}>
+        <Sel value={phase} onChange={(e) => setPhase(e.target.value)} className="w-32">
+          <option value="before">Before</option>
+          <option value="during">During</option>
+          <option value="after">After</option>
+          <option value="issues">Issue / Problem</option>
+        </Sel>
+        {!compact && (
+          <Inp
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+            placeholder="Optional caption"
+            className="flex-1 min-w-[150px]"
+          />
+        )}
+        <label
+          className={`px-3 py-2 rounded-lg font-medium cursor-pointer transition-colors text-sm whitespace-nowrap ${
+            uploading
+              ? "bg-slate-700 text-slate-400 cursor-wait"
+              : "bg-amber-400 text-black hover:bg-amber-500"
+          }`}
+        >
+          {uploading ? "Uploading..." : "📷 Upload Photos"}
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            capture="environment"
+            disabled={uploading}
+            onChange={(e) => handleFiles(e.target.files)}
+            className="hidden"
+          />
+        </label>
+      </div>
+      {!compact && (
+        <p className="text-xs text-slate-600 mt-1">
+          Tap to take a photo or upload from gallery. Auto-compressed before upload.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ================================================================
+// PHOTO GALLERY (displays photos for a job or daily log)
+// ================================================================
+function PhotoGallery({ photos, onDelete, compact = false }) {
+  const [enlarged, setEnlarged] = useState(null);
+
+  const getPublicUrl = (path) => {
+    const { data } = supabase.storage.from("job-photos").getPublicUrl(path);
+    return data?.publicUrl;
+  };
+
+  const phaseColors = {
+    before: "bg-blue-900/60 text-blue-300 border-blue-700",
+    during: "bg-amber-900/60 text-amber-300 border-amber-700",
+    after:  "bg-emerald-900/60 text-emerald-300 border-emerald-700",
+    issues: "bg-rose-900/60 text-rose-300 border-rose-700",
+  };
+
+  if (!photos || photos.length === 0) {
+    return (
+      <p className="text-slate-600 text-xs italic">No photos uploaded yet.</p>
+    );
+  }
+
+  return (
+    <>
+      <div className={`grid gap-2 ${compact ? "grid-cols-3 md:grid-cols-4" : "grid-cols-2 md:grid-cols-4 lg:grid-cols-5"}`}>
+        {photos.map((p) => {
+          const url = getPublicUrl(p.storage_path);
+          return (
+            <div key={p.id} className="relative group">
+              <img
+                src={url}
+                alt={p.caption || "Job photo"}
+                onClick={() => setEnlarged(p)}
+                className="w-full h-24 object-cover rounded-lg cursor-pointer border border-slate-700 hover:border-amber-400 transition-colors"
+              />
+              <div className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-semibold border ${phaseColors[p.phase] || phaseColors.during} uppercase tracking-wider`}>
+                {p.phase}
+              </div>
+              {onDelete && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDelete(p); }}
+                  className="absolute top-1 right-1 w-5 h-5 bg-rose-600 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity hover:bg-rose-500"
+                  title="Delete photo"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* LIGHTBOX */}
+      {enlarged && (
+        <div
+          onClick={() => setEnlarged(null)}
+          className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 cursor-pointer"
+        >
+          <div className="max-w-4xl max-h-[90vh] flex flex-col items-center gap-3">
+            <img
+              src={getPublicUrl(enlarged.storage_path)}
+              alt={enlarged.caption || "Job photo"}
+              className="max-w-full max-h-[80vh] object-contain rounded-lg"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <div className="text-center text-white text-sm">
+              <div className="flex items-center justify-center gap-3 mb-1">
+                <span className={`px-2 py-0.5 rounded text-xs font-semibold border ${phaseColors[enlarged.phase] || phaseColors.during} uppercase`}>
+                  {enlarged.phase}
+                </span>
+                <span className="text-slate-400 text-xs">{formatDate(enlarged.created_at)}</span>
+              </div>
+              {enlarged.caption && <p className="text-slate-300 italic">{enlarged.caption}</p>}
+              <p className="text-slate-600 text-xs mt-1">Click anywhere to close</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ================================================================
+// DAILY LOGS
+// ================================================================
+function DailyLogs({ jobs, clients, dailyLogs, setDailyLogs, session }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [selectedJobId, setSelectedJobId] = useState("");
+  const [logDate, setLogDate]             = useState(today);
+  const [weather, setWeather]             = useState("");
+  const [temperature, setTemperature]     = useState("");
+  const [hoursConnor, setHoursConnor]     = useState("");
+  const [hoursDad, setHoursDad]           = useState("");
+  const [hoursOther, setHoursOther]       = useState("");
+  const [otherWorker, setOtherWorker]     = useState("");
+  const [workPerformed, setWorkPerformed] = useState("");
+  const [materialsUsed, setMaterialsUsed] = useState("");
+  const [issues, setIssues]               = useState("");
+  const [visitors, setVisitors]           = useState("");
+  const [saving, setSaving]               = useState(false);
+  const [editingLogId, setEditingLogId]   = useState(null);
+  const [photos, setPhotos]               = useState([]);
+  const [photoRefresh, setPhotoRefresh]   = useState(0);
+
+  const activeJobs = jobs.filter((j) => j.status === "Active");
+  const jobsLoggedToday = new Set(
+    dailyLogs.filter((l) => l.log_date === today).map((l) => l.job_id)
+  );
+
+  const getClientName = (clientId) => {
+    const c = clients.find((c) => c.id === clientId);
+    return c ? c.name : null;
+  };
+
+  // Load photos for the currently selected job + date
+  useEffect(() => {
+    if (!selectedJobId) { setPhotos([]); return; }
+    let log_id = editingLogId;
+    if (!log_id) {
+      const existing = dailyLogs.find(
+        (l) => l.job_id === selectedJobId && l.log_date === logDate
+      );
+      log_id = existing?.id;
+    }
+
+    if (log_id) {
+      supabase
+        .from("job_photos")
+        .select("*")
+        .eq("daily_log_id", log_id)
+        .order("created_at", { ascending: false })
+        .then(({ data }) => { if (data) setPhotos(data); });
+    } else {
+      setPhotos([]);
+    }
+  }, [selectedJobId, logDate, editingLogId, dailyLogs, photoRefresh]);
+
+  const resetForm = () => {
+    setWeather(""); setTemperature("");
+    setHoursConnor(""); setHoursDad(""); setHoursOther(""); setOtherWorker("");
+    setWorkPerformed(""); setMaterialsUsed(""); setIssues(""); setVisitors("");
+    setEditingLogId(null);
+  };
+
+  const loadExistingLog = (jobId, date) => {
+    const existing = dailyLogs.find(
+      (l) => l.job_id === jobId && l.log_date === date
+    );
+    if (existing) {
+      setWeather(existing.weather || "");
+      setTemperature(existing.temperature || "");
+      setHoursConnor(existing.hours_connor || "");
+      setHoursDad(existing.hours_dad || "");
+      setHoursOther(existing.hours_other || "");
+      setOtherWorker(existing.other_worker_name || "");
+      setWorkPerformed(existing.work_performed || "");
+      setMaterialsUsed(existing.materials_used || "");
+      setIssues(existing.issues || "");
+      setVisitors(existing.visitors || "");
+      setEditingLogId(existing.id);
+    } else {
+      resetForm();
+    }
+  };
+
+  const handleSelectJob = (jobId) => {
+    setSelectedJobId(jobId);
+    setLogDate(today);
+    loadExistingLog(jobId, today);
+  };
+
+  const handleDateChange = (newDate) => {
+    setLogDate(newDate);
+    if (selectedJobId) loadExistingLog(selectedJobId, newDate);
+  };
+
+  const saveLog = async () => {
+    if (!selectedJobId) { alert("Select a job first."); return; }
+    if (!workPerformed.trim()) {
+      alert("Work Performed is required. Describe what was done today.");
+      return;
+    }
+
+    setSaving(true);
+    const createdBy = session?.user?.email || "unknown";
+
+    const payload = {
+      job_id: selectedJobId,
+      log_date: logDate,
+      weather: weather || null,
+      temperature: temperature ? parseInt(temperature) : null,
+      hours_connor: parseFloat(hoursConnor) || 0,
+      hours_dad: parseFloat(hoursDad) || 0,
+      hours_other: parseFloat(hoursOther) || 0,
+      other_worker_name: otherWorker || null,
+      work_performed: workPerformed,
+      materials_used: materialsUsed || null,
+      issues: issues || null,
+      visitors: visitors || null,
+      created_by: createdBy,
+    };
+
+    if (editingLogId) {
+      const { data, error } = await supabase
+        .from("daily_logs")
+        .update(payload)
+        .eq("id", editingLogId)
+        .select()
+        .single();
+
+      if (!error && data) {
+        setDailyLogs((prev) => prev.map((l) => (l.id === data.id ? data : l)));
+        alert("Log updated.");
+      } else {
+        alert("Update failed: " + error?.message);
+      }
+    } else {
+      const { data, error } = await supabase
+        .from("daily_logs")
+        .insert(payload)
+        .select()
+        .single();
+
+      if (!error && data) {
+        setDailyLogs((prev) => [data, ...prev]);
+        setEditingLogId(data.id);
+        alert("Log saved.");
+      } else {
+        alert("Save failed: " + error?.message);
+      }
+    }
+
+    setSaving(false);
+  };
+
+  const deletePhoto = async (photo) => {
+    if (!window.confirm("Delete this photo permanently?")) return;
+    await supabase.storage.from("job-photos").remove([photo.storage_path]);
+    await supabase.from("job_photos").delete().eq("id", photo.id);
+    setPhotoRefresh((x) => x + 1);
+  };
+
+  const selectedJob = jobs.find((j) => j.id === selectedJobId);
+  const totalHours = (parseFloat(hoursConnor) || 0) + (parseFloat(hoursDad) || 0) + (parseFloat(hoursOther) || 0);
+
+  // Past logs for selected job
+  const jobPastLogs = selectedJobId
+    ? dailyLogs.filter((l) => l.job_id === selectedJobId).slice(0, 14)
+    : [];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">Daily Logs</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            End-of-day update required for every active job. Today: {new Date(today).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+          </p>
+        </div>
+      </div>
+
+      {/* ACTIVE JOBS NEEDING LOGS */}
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-xs text-slate-500 uppercase tracking-wider">
+              Active Jobs — Today's Status
+            </p>
+            <span className="text-xs text-slate-600">
+              {activeJobs.length - jobsLoggedToday.size} of {activeJobs.length} pending
+            </span>
+          </div>
+          {activeJobs.length === 0 && (
+            <p className="text-slate-600 text-sm italic">
+              No active jobs. Mark a job as Active in the Jobs tab to log work.
+            </p>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {activeJobs.map((j) => {
+              const logged = jobsLoggedToday.has(j.id);
+              const isSelected = selectedJobId === j.id;
+              return (
+                <button
+                  key={j.id}
+                  onClick={() => handleSelectJob(j.id)}
+                  className={`text-left p-3 rounded-lg border-2 transition-all ${
+                    isSelected
+                      ? "border-amber-400 bg-amber-900/20"
+                      : logged
+                      ? "border-emerald-700/40 bg-emerald-900/10 hover:border-emerald-600"
+                      : "border-rose-700/50 bg-rose-900/10 hover:border-rose-600"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <span className="text-slate-200 font-medium text-sm truncate">{j.name}</span>
+                    <span
+                      className={`shrink-0 w-2.5 h-2.5 rounded-full ${
+                        logged ? "bg-emerald-400" : "bg-rose-400"
+                      }`}
+                      title={logged ? "Logged today" : "Needs today's log"}
+                    />
+                  </div>
+                  {j.client_id && getClientName(j.client_id) && (
+                    <p className="text-slate-500 text-xs">{getClientName(j.client_id)}</p>
+                  )}
+                  <p className={`text-xs mt-1 ${logged ? "text-emerald-400" : "text-rose-400"}`}>
+                    {logged ? "✓ Logged today" : "● Needs today's log"}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* LOG ENTRY FORM */}
+      {selectedJobId && (
+        <Card className="border-amber-900/40">
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">
+                  {editingLogId ? "Editing Log" : "New Log"}
+                </p>
+                <h2 className="text-lg font-bold text-slate-100">{selectedJob?.name}</h2>
+                {selectedJob?.client_id && getClientName(selectedJob.client_id) && (
+                  <p className="text-slate-500 text-xs">{getClientName(selectedJob.client_id)}</p>
+                )}
+              </div>
+              <button
+                onClick={() => { setSelectedJobId(""); resetForm(); }}
+                className="text-xs text-slate-500 hover:text-slate-300"
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            {/* DATE */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Log Date</label>
+              <Inp
+                type="date"
+                value={logDate}
+                onChange={(e) => handleDateChange(e.target.value)}
+                className="w-44"
+              />
+            </div>
+
+            {/* WEATHER + TEMP */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Weather</label>
+                <Sel value={weather} onChange={(e) => setWeather(e.target.value)}>
+                  <option value="">— Select —</option>
+                  <option value="Sunny / Clear">Sunny / Clear</option>
+                  <option value="Partly Cloudy">Partly Cloudy</option>
+                  <option value="Overcast">Overcast</option>
+                  <option value="Rain">Rain</option>
+                  <option value="Heavy Rain">Heavy Rain</option>
+                  <option value="Snow">Snow</option>
+                  <option value="Wind">Wind</option>
+                  <option value="Storm">Storm</option>
+                </Sel>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Temperature (°F)</label>
+                <Inp
+                  type="number"
+                  placeholder="e.g. 68"
+                  value={temperature}
+                  onChange={(e) => setTemperature(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* HOURS PER PERSON */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-2">
+                Hours Worked
+                {totalHours > 0 && (
+                  <span className="text-amber-400 ml-2">({totalHours.toFixed(1)} total)</span>
+                )}
+              </label>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <p className="text-xs text-slate-500 mb-1">Connor</p>
+                  <Inp
+                    type="number"
+                    step="0.25"
+                    placeholder="Hours"
+                    value={hoursConnor}
+                    onChange={(e) => setHoursConnor(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-1">Dad</p>
+                  <Inp
+                    type="number"
+                    step="0.25"
+                    placeholder="Hours"
+                    value={hoursDad}
+                    onChange={(e) => setHoursDad(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-1">
+                    Other {otherWorker && `(${otherWorker})`}
+                  </p>
+                  <div className="flex gap-2">
+                    <Inp
+                      type="number"
+                      step="0.25"
+                      placeholder="Hours"
+                      value={hoursOther}
+                      onChange={(e) => setHoursOther(e.target.value)}
+                    />
+                    <Inp
+                      placeholder="Name"
+                      value={otherWorker}
+                      onChange={(e) => setOtherWorker(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* WORK PERFORMED */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">
+                Work Performed <span className="text-rose-400">*</span>
+              </label>
+              <textarea
+                value={workPerformed}
+                onChange={(e) => setWorkPerformed(e.target.value)}
+                rows={4}
+                placeholder="Describe what was completed today. Be specific — this is your record if a dispute comes up later."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+              />
+            </div>
+
+            {/* MATERIALS USED */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Materials Used Today</label>
+              <textarea
+                value={materialsUsed}
+                onChange={(e) => setMaterialsUsed(e.target.value)}
+                rows={2}
+                placeholder="e.g. 12 sheets 1/2 drywall, 4 boxes screws, 3 tubes adhesive..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+              />
+            </div>
+
+            {/* ISSUES + VISITORS */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Issues / Problems</label>
+                <textarea
+                  value={issues}
+                  onChange={(e) => setIssues(e.target.value)}
+                  rows={2}
+                  placeholder="Anything go wrong? Damaged materials, weather delays, code questions..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Visitors / Inspectors</label>
+                <textarea
+                  value={visitors}
+                  onChange={(e) => setVisitors(e.target.value)}
+                  rows={2}
+                  placeholder="Who showed up? Inspector name, sub, client visit, supplier delivery..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                />
+              </div>
+            </div>
+
+            {/* SAVE BUTTON */}
+            <div className="flex gap-2">
+              <Btn
+                onClick={saveLog}
+                disabled={saving}
+                className="bg-amber-400 text-black hover:bg-amber-500 font-semibold flex-1"
+              >
+                {saving ? "Saving..." : editingLogId ? "Update Log" : "Save Log"}
+              </Btn>
+            </div>
+
+            {/* PHOTO UPLOADER — only shown after log is saved */}
+            {editingLogId && (
+              <div className="pt-3 border-t border-slate-800">
+                <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">
+                  Photos for this log
+                </p>
+                <PhotoUploader
+                  jobId={selectedJobId}
+                  dailyLogId={editingLogId}
+                  session={session}
+                  onUploaded={() => setPhotoRefresh((x) => x + 1)}
+                />
+                <div className="mt-3">
+                  <PhotoGallery photos={photos} onDelete={deletePhoto} />
+                </div>
+              </div>
+            )}
+            {!editingLogId && (
+              <p className="text-xs text-slate-600 italic">
+                💡 Save the log first, then you can attach photos.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* PAST LOGS FOR SELECTED JOB */}
+      {selectedJobId && jobPastLogs.length > 0 && (
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">
+              Past Logs for {selectedJob?.name} ({jobPastLogs.length})
+            </p>
+            <div className="space-y-2">
+              {jobPastLogs.map((l) => {
+                const totalH = (l.hours_connor || 0) + (l.hours_dad || 0) + (l.hours_other || 0);
+                const isCurrentlyEditing = editingLogId === l.id;
+                return (
+                  <div
+                    key={l.id}
+                    onClick={() => { setLogDate(l.log_date); loadExistingLog(selectedJobId, l.log_date); }}
+                    className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                      isCurrentlyEditing
+                        ? "border-amber-400 bg-amber-900/10"
+                        : "border-slate-800 hover:border-slate-700 bg-slate-900/40"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-slate-200 font-semibold text-sm">{formatDate(l.log_date)}</span>
+                        {l.weather && <span className="text-xs text-slate-500">{l.weather}{l.temperature && ` · ${l.temperature}°F`}</span>}
+                      </div>
+                      <span className="text-amber-400 text-xs font-semibold">{totalH.toFixed(1)}h</span>
+                    </div>
+                    <p className="text-slate-400 text-xs line-clamp-2">{l.work_performed}</p>
+                    {l.issues && (
+                      <p className="text-rose-400 text-xs mt-1">⚠ {l.issues}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ================================================================
 // SETTINGS
 // ================================================================
 function Settings({ settings, setSettings }) {
@@ -2576,7 +3746,7 @@ const DEFAULT_SETTINGS = {
   website:        "northshorebuildsmi.com",
 };
 
-const TABS = ["Dashboard", "Estimator", "Jobs", "Schedule", "Clients", "Settings"];
+const TABS = ["Dashboard", "Estimator", "Jobs", "Daily", "Schedule", "Clients", "Settings"];
 
 export default function App() {
   const [tab, setTab]           = useState("Dashboard");
@@ -2584,6 +3754,7 @@ export default function App() {
   const [jobs, setJobs]         = useState([]);
   const [estimates, setEstimates] = useState([]);
   const [clients, setClients]   = useState([]);
+  const [dailyLogs, setDailyLogs] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [session, setSession]   = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -2616,14 +3787,17 @@ export default function App() {
         { data: jobsData },
         { data: estimatesData },
         { data: clientsData },
+        { data: dailyLogsData },
       ] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
         supabase.from("clients").select("*").order("created_at", { ascending: false }),
+        supabase.from("daily_logs").select("*").order("log_date", { ascending: false }),
       ]);
-      if (jobsData)     setJobs(jobsData);
-      if (estimatesData) setEstimates(estimatesData);
-      if (clientsData)  setClients(clientsData);
+      if (jobsData)       setJobs(jobsData);
+      if (estimatesData)  setEstimates(estimatesData);
+      if (clientsData)    setClients(clientsData);
+      if (dailyLogsData)  setDailyLogs(dailyLogsData);
       setLoading(false);
     }
     loadData();
@@ -2635,6 +3809,7 @@ export default function App() {
     setJobs([]);
     setEstimates([]);
     setClients([]);
+    setDailyLogs([]);
   };
 
   const handleEstimateSaved = (est) => setEstimates((prev) => [est, ...prev]);
@@ -2705,9 +3880,10 @@ export default function App() {
 
       {/* MAIN */}
       <main className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
-        {tab === "Dashboard"  && <Dashboard  jobs={jobs} estimates={estimates} clients={clients} />}
+        {tab === "Dashboard"  && <Dashboard  jobs={jobs} estimates={estimates} clients={clients} dailyLogs={dailyLogs} setTab={setTab} />}
         {tab === "Estimator"  && <Estimator  settings={settings} onEstimateSaved={handleEstimateSaved} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
-        {tab === "Jobs"       && <Jobs       jobs={jobs} setJobs={setJobs} clients={clients} settings={settings} />}
+        {tab === "Jobs"       && <Jobs       jobs={jobs} setJobs={setJobs} clients={clients} settings={settings} session={session} />}
+        {tab === "Daily"      && <DailyLogs  jobs={jobs} clients={clients} dailyLogs={dailyLogs} setDailyLogs={setDailyLogs} session={session} />}
         {tab === "Schedule"   && <Schedule   jobs={jobs} />}
         {tab === "Clients"    && <Clients    jobs={jobs} estimates={estimates} />}
         {tab === "Settings"   && <Settings   settings={settings} setSettings={setSettings} />}
