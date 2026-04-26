@@ -62,6 +62,13 @@ import { supabase } from "./supabase";
 //   - jobs.contract_signed_at + jobs.contract_number columns required
 //   - Contract button surfaces only on Approved estimates
 //   - today's render bug fixed in Dashboard banner (was today\'s)
+// TIME TRACKING:
+//   - Persistent ClockWidget in header — clock in/out from any tab
+//   - Active session shows running timer + job name in header
+//   - Per-job time history sub-tab in Jobs (with manual entry for missed times)
+//   - Dashboard active session card
+//   - Computed labor cost per job (settings.laborRate × actual hours)
+//   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 
 // ================================================================
@@ -203,6 +210,25 @@ const formatPhone = (phone) => {
     return `(${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
   }
   return phone;
+};
+
+// Format minutes (or seconds via fromSeconds=true) as "Xh Ym" or "Ym" — used by ClockWidget + time history
+const formatDuration = (minutes) => {
+  const m = Math.max(0, Math.floor(Number(minutes) || 0));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem === 0 ? `${h}h` : `${h}h ${rem}m`;
+};
+
+// Hook that re-renders every `intervalMs` (default 60s) — drives the live clock widget
+const useTicker = (intervalMs = 60000, isActive = true) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!isActive) return;
+    const id = setInterval(() => setTick((t) => t + 1), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs, isActive]);
 };
 
 const statusColor = (s) => {
@@ -1622,6 +1648,409 @@ function openContract(estimate, client, settings, contractNum) {
   } else {
     alert("Please allow popups for this site to generate the contract.");
   }
+}
+
+// ================================================================
+// CLOCK WIDGET — persistent header element
+// ================================================================
+// Shows clock state in the header from any tab. Two states:
+//   - Inactive: small "Clock In" button (slate). Tap → JobPickerModal.
+//   - Active:   pulsing green dot + job name + live timer. Tap → menu
+//               with "Clock Out" + "Edit notes" options.
+// Active state survives reload because the live entry is fetched from
+// Supabase on mount in AppInner.
+// ================================================================
+function ClockWidget({ activeEntry, jobs, onClockIn, onClockOut, compact = false }) {
+  // Re-render every minute when active so the timer ticks live
+  useTicker(60000, !!activeEntry);
+
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  if (!activeEntry) {
+    return (
+      <>
+        <button
+          onClick={() => setPickerOpen(true)}
+          className={`flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 hover:border-slate-600 transition-colors text-slate-300 hover:text-white ${
+            compact ? "px-2 py-1.5 text-xs" : "px-3 py-1.5 text-xs font-medium"
+          }`}
+          title="Clock in to a job"
+        >
+          <Clock className="w-3.5 h-3.5" />
+          {!compact && <span>Clock In</span>}
+        </button>
+        <JobPickerModal
+          isOpen={pickerOpen}
+          jobs={jobs}
+          onClose={() => setPickerOpen(false)}
+          onPick={(job, notes) => {
+            onClockIn(job, notes);
+            setPickerOpen(false);
+          }}
+        />
+      </>
+    );
+  }
+
+  const job = jobs.find((j) => j.id === activeEntry.job_id);
+  const jobName = job?.name || "(unknown job)";
+  const elapsedMin = Math.floor((Date.now() - new Date(activeEntry.clock_in).getTime()) / 60000);
+
+  return (
+    <>
+      <button
+        onClick={() => setMenuOpen(true)}
+        className={`flex items-center gap-2 rounded-lg border border-emerald-700/60 bg-emerald-900/30 hover:bg-emerald-900/50 transition-colors text-emerald-200 ${
+          compact ? "px-2 py-1.5 text-xs" : "px-3 py-1.5 text-xs font-medium"
+        }`}
+        title={`Clocked in: ${jobName}`}
+      >
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+        </span>
+        <span className="truncate max-w-[120px]">{jobName}</span>
+        <span className="font-mono tabular-nums opacity-80">{formatDuration(elapsedMin)}</span>
+      </button>
+      <ClockSessionMenu
+        isOpen={menuOpen}
+        activeEntry={activeEntry}
+        jobName={jobName}
+        elapsedMin={elapsedMin}
+        onClose={() => setMenuOpen(false)}
+        onClockOut={(notes) => {
+          onClockOut(notes);
+          setMenuOpen(false);
+        }}
+      />
+    </>
+  );
+}
+
+// ================================================================
+// JOB PICKER MODAL — shown when clocking in without a target job
+// ================================================================
+function JobPickerModal({ isOpen, jobs, onClose, onPick }) {
+  const [selectedJobId, setSelectedJobId] = useState("");
+  const [notes, setNotes] = useState("");
+  const activeJobs = jobs.filter((j) => j.status === "Active");
+
+  // Auto-select if there's only one active job — common case for solo-op
+  useEffect(() => {
+    if (isOpen && activeJobs.length === 1 && !selectedJobId) {
+      setSelectedJobId(activeJobs[0].id);
+    }
+    if (!isOpen) {
+      setSelectedJobId("");
+      setNotes("");
+    }
+  }, [isOpen, activeJobs, selectedJobId]);
+
+  const handleConfirm = () => {
+    const job = jobs.find((j) => j.id === selectedJobId);
+    if (!job) return;
+    onPick(job, notes);
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-emerald-400" />
+              Clock In
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              {activeJobs.length === 0
+                ? "No active jobs. Create or activate a job first."
+                : "Pick a job. Timer starts immediately."}
+            </p>
+
+            {activeJobs.length > 0 && (
+              <>
+                <div className="mb-3">
+                  <label className="block text-xs text-slate-400 mb-1">Job</label>
+                  <Sel
+                    value={selectedJobId}
+                    onChange={(e) => setSelectedJobId(e.target.value)}
+                    autoFocus
+                  >
+                    <option value="">— Select active job —</option>
+                    {activeJobs.map((j) => (
+                      <option key={j.id} value={j.id}>{j.name}</option>
+                    ))}
+                  </Sel>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-xs text-slate-400 mb-1">Notes (optional)</label>
+                  <Inp
+                    placeholder="e.g. drywall hang east wall"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+              {activeJobs.length > 0 && (
+                <button
+                  onClick={handleConfirm}
+                  disabled={!selectedJobId}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-400 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                >
+                  <Clock className="w-4 h-4" /> Start Timer
+                </button>
+              )}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// CLOCK SESSION MENU — shown when tapping the active clock chip
+// ================================================================
+function ClockSessionMenu({ isOpen, activeEntry, jobName, elapsedMin, onClose, onClockOut }) {
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (isOpen) setNotes(activeEntry?.notes || "");
+  }, [isOpen, activeEntry]);
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-emerald-700/60 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <span className="relative flex h-3 w-3 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-400" />
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-emerald-300 font-semibold truncate">{jobName}</p>
+                <p className="text-xs text-slate-500">
+                  Started {new Date(activeEntry.clock_in).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                  &nbsp;•&nbsp; {formatDuration(elapsedMin)} so far
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs text-slate-400 mb-1">Session notes (saved on clock out)</label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={3}
+                placeholder="What you worked on..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+              />
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+              >
+                Keep Working
+              </button>
+              <button
+                onClick={() => onClockOut(notes)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-rose-600 text-white hover:bg-rose-500 transition-colors flex items-center gap-1.5"
+              >
+                <Clock className="w-4 h-4" /> Clock Out
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// MANUAL TIME ENTRY MODAL — for missed times / paper-tracked work
+// ================================================================
+function ManualTimeEntryModal({ isOpen, jobId, jobName, existingEntry, onClose, onSave, onDelete }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [date, setDate]   = useState(new Date().toISOString().slice(0, 10));
+  const [startT, setStartT] = useState("08:00");
+  const [endT, setEndT]   = useState("16:00");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (existingEntry) {
+      const ci = new Date(existingEntry.clock_in);
+      const co = existingEntry.clock_out ? new Date(existingEntry.clock_out) : null;
+      const pad = (n) => String(n).padStart(2, "0");
+      setDate(ci.toISOString().slice(0, 10));
+      setStartT(`${pad(ci.getHours())}:${pad(ci.getMinutes())}`);
+      setEndT(co ? `${pad(co.getHours())}:${pad(co.getMinutes())}` : "");
+      setNotes(existingEntry.notes || "");
+    } else {
+      setDate(new Date().toISOString().slice(0, 10));
+      setStartT("08:00");
+      setEndT("16:00");
+      setNotes("");
+    }
+  }, [isOpen, existingEntry]);
+
+  const handleSave = async () => {
+    if (!date || !startT || !endT) {
+      toast.error("Date, start, and end are all required");
+      return;
+    }
+    const ci = new Date(`${date}T${startT}:00`);
+    const co = new Date(`${date}T${endT}:00`);
+    if (co <= ci) {
+      toast.error("End time must be after start time");
+      return;
+    }
+    setSaving(true);
+    await onSave({
+      clock_in: ci.toISOString(),
+      clock_out: co.toISOString(),
+      duration_minutes: Math.round((co - ci) / 60000),
+      notes: notes || null,
+    });
+    setSaving(false);
+  };
+
+  const handleDelete = async () => {
+    if (!existingEntry || !onDelete) return;
+    const ok = await confirm({
+      title: "Delete this time entry?",
+      message: `${formatDate(existingEntry.clock_in)} — ${formatDuration(existingEntry.duration_minutes)} on ${jobName}. Cannot be undone.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    await onDelete(existingEntry);
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Pencil className="w-5 h-5 text-amber-400" />
+              {existingEntry ? "Edit Time Entry" : "Add Time Entry"}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">{jobName}</p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Date</label>
+                <Inp type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Start</label>
+                  <Inp type="time" value={startT} onChange={(e) => setStartT(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">End</label>
+                  <Inp type="time" value={endT} onChange={(e) => setEndT(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={2}
+                  placeholder="What you worked on..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              {existingEntry && onDelete && (
+                <button
+                  onClick={handleDelete}
+                  className="mr-auto px-3 py-2 rounded-lg text-xs font-medium bg-rose-900/30 text-rose-300 hover:bg-rose-900/50 border border-rose-800/50 transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 }
 
 // ================================================================
@@ -3283,7 +3712,7 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
 // JOB OPERATIONS
 // Punch list, material deliveries, photos sub-component for Jobs
 // ================================================================
-function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs }) {
+function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs, timeEntries, setTimeEntries, activeTimeEntry }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [opsTab, setOpsTab] = useState("Punch");
@@ -3427,6 +3856,69 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
   const completedPunch = punchList.filter((p) => p.completed);
   const pendingDeliveries = deliveries.filter((d) => d.status !== "Delivered");
 
+  // Time entries scoped to THIS job
+  const jobTimeEntries = (timeEntries || []).filter((t) => t.job_id === job.id);
+  const completedTimeEntries = jobTimeEntries.filter((t) => t.duration_minutes != null);
+  const totalMinutes = completedTimeEntries.reduce((s, t) => s + (t.duration_minutes || 0), 0);
+  const laborRate = Number(settings.laborRate) || 95;
+  const laborCost = (totalMinutes / 60) * laborRate;
+
+  // Manual entry / edit state
+  const [timeModalOpen, setTimeModalOpen] = useState(false);
+  const [timeModalEntry, setTimeModalEntry] = useState(null); // null = create, entry = edit
+
+  const handleTimeSave = useCallback(async (payload) => {
+    if (timeModalEntry) {
+      // Edit existing
+      const { data, error } = await supabase
+        .from("time_entries")
+        .update(payload)
+        .eq("id", timeModalEntry.id)
+        .select()
+        .single();
+      if (!error && data) {
+        setTimeEntries((prev) => prev.map((t) => (t.id === data.id ? data : t)));
+        toast.success("Time entry updated");
+        setTimeModalOpen(false);
+      } else {
+        toast.error("Update failed: " + (error?.message || "Unknown error"));
+      }
+    } else {
+      // Create new manual entry — needs job_id + user fields
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        toast.error("Not signed in");
+        return;
+      }
+      const { data, error } = await supabase
+        .from("time_entries")
+        .insert({
+          ...payload,
+          job_id: job.id,
+          user_id: session.user.id,
+          user_email: session.user.email,
+        })
+        .select()
+        .single();
+      if (!error && data) {
+        setTimeEntries((prev) => [data, ...prev]);
+        toast.success("Time entry added");
+        setTimeModalOpen(false);
+      } else {
+        toast.error("Add failed: " + (error?.message || "Unknown error"));
+      }
+    }
+  }, [timeModalEntry, job.id, setTimeEntries, toast]);
+
+  const handleTimeDelete = useCallback(async (entry) => {
+    const { error } = await supabase.from("time_entries").delete().eq("id", entry.id);
+    if (!error) {
+      setTimeEntries((prev) => prev.filter((t) => t.id !== entry.id));
+      toast.success("Entry deleted");
+      setTimeModalOpen(false);
+    }
+  }, [setTimeEntries, toast]);
+
   return (
     <div className="space-y-3">
       <Tabs value={opsTab} onValueChange={setOpsTab}>
@@ -3439,6 +3931,9 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
           </TabsTrigger>
           <TabsTrigger value="Photos">
             Photos
+          </TabsTrigger>
+          <TabsTrigger value="Time">
+            Time ({formatDuration(totalMinutes)})
           </TabsTrigger>
         </TabsList>
 
@@ -3700,15 +4195,129 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* TIME TRACKING — per-job time history with manual add/edit */}
+        <TabsContent value="Time">
+          <Card>
+            <CardContent className="p-4">
+              {/* Summary header */}
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Total Hours</p>
+                  <p className="text-xl font-bold text-amber-400 tabular-nums">{formatDuration(totalMinutes)}</p>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Entries</p>
+                  <p className="text-xl font-bold text-slate-100 tabular-nums">{completedTimeEntries.length}</p>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Labor Cost</p>
+                  <p className="text-xl font-bold text-emerald-400 tabular-nums">{currency(laborCost)}</p>
+                  <p className="text-[10px] text-slate-600 mt-0.5">@ {currency(laborRate)}/hr</p>
+                </div>
+              </div>
+
+              {/* Active session callout */}
+              {activeTimeEntry && activeTimeEntry.job_id === job.id && (
+                <div className="mb-3 px-3 py-2 bg-emerald-900/30 border border-emerald-700/50 rounded-lg flex items-center gap-2 text-emerald-200 text-sm">
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+                  </span>
+                  Currently clocked in to this job. Use the timer chip in the header to clock out.
+                </div>
+              )}
+
+              {/* Add manual entry */}
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-xs text-slate-500 uppercase tracking-wider">
+                  History ({jobTimeEntries.length})
+                </p>
+                <button
+                  onClick={() => { setTimeModalEntry(null); setTimeModalOpen(true); }}
+                  className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 transition-colors"
+                  title="Add a past time entry (for missed clock-ins)"
+                >
+                  <Plus className="w-3 h-3" /> Manual Entry
+                </button>
+              </div>
+
+              {jobTimeEntries.length === 0 ? (
+                <p className="text-slate-500 text-sm text-center py-6">
+                  No time logged yet. Use the clock chip in the header to start, or add a manual entry above.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {jobTimeEntries.map((entry) => {
+                    const ci = new Date(entry.clock_in);
+                    const isActive = entry.clock_out == null;
+                    return (
+                      <div
+                        key={entry.id}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${
+                          isActive
+                            ? "bg-emerald-900/20 border-emerald-700/50"
+                            : "bg-slate-900/60 border-slate-800"
+                        }`}
+                      >
+                        <Clock className={`w-4 h-4 shrink-0 ${isActive ? "text-emerald-400" : "text-slate-500"}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-baseline gap-2 text-sm">
+                            <span className="text-slate-200 font-medium">
+                              {ci.toLocaleDateString([], { month: "short", day: "numeric" })}
+                            </span>
+                            <span className="text-slate-500 text-xs">
+                              {ci.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                              {entry.clock_out && ` — ${new Date(entry.clock_out).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
+                            </span>
+                            {entry.user_email && (
+                              <span className="text-slate-600 text-xs truncate">
+                                {entry.user_email.split("@")[0]}
+                              </span>
+                            )}
+                          </div>
+                          {entry.notes && (
+                            <p className="text-xs text-slate-500 mt-0.5 truncate">{entry.notes}</p>
+                          )}
+                        </div>
+                        <span className={`text-sm font-mono tabular-nums shrink-0 ${
+                          isActive ? "text-emerald-400" : "text-amber-400"
+                        }`}>
+                          {isActive ? "running" : formatDuration(entry.duration_minutes)}
+                        </span>
+                        {!isActive && (
+                          <button
+                            onClick={() => { setTimeModalEntry(entry); setTimeModalOpen(true); }}
+                            className="text-slate-600 hover:text-amber-400 transition-colors"
+                            title="Edit"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {/* Manual time entry modal — shared by Add and Edit */}
+      <ManualTimeEntryModal
+        isOpen={timeModalOpen}
+        jobId={job.id}
+        jobName={job.name}
+        existingEntry={timeModalEntry}
+        onClose={() => setTimeModalOpen(false)}
+        onSave={handleTimeSave}
+        onDelete={handleTimeDelete}
+      />
     </div>
   );
 }
-
-// ================================================================
-// JOBS
-// ================================================================
-function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates }) {
+function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates, timeEntries, setTimeEntries, activeTimeEntry }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [name, setName] = useState("");
@@ -4141,7 +4750,7 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                             </div>
                           </div>
 
-                          {/* OPS (PUNCH / DELIVERIES / PHOTOS) */}
+                          {/* OPS (PUNCH / DELIVERIES / PHOTOS / TIME) */}
                           <JobOperations
                             job={j}
                             jobPhotos={jobPhotos}
@@ -4149,6 +4758,9 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                             setJobPhotos={setJobPhotos}
                             settings={settings}
                             allJobs={jobs}
+                            timeEntries={timeEntries}
+                            setTimeEntries={setTimeEntries}
+                            activeTimeEntry={activeTimeEntry}
                           />
 
                           {/* DELETE JOB */}
@@ -5311,6 +5923,8 @@ function AppInner() {
   const [clients, setClients] = useState([]);
   const [dailyLogs, setDailyLogs] = useState([]);
   const [jobPhotos, setJobPhotos] = useState([]);
+  const [timeEntries, setTimeEntries] = useState([]);
+  const [activeTimeEntry, setActiveTimeEntry] = useState(null); // currently-clocked-in session for this user
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Settings
@@ -5364,12 +5978,20 @@ function AppInner() {
     }
     let alive = true;
     (async () => {
-      const [jobsRes, estRes, cliRes, logRes, photoRes] = await Promise.all([
+      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
         supabase.from("clients").select("*").order("name"),
         supabase.from("daily_logs").select("*").order("log_date", { ascending: false }),
         supabase.from("job_photos").select("*").order("created_at", { ascending: false }),
+        supabase.from("time_entries").select("*").order("clock_in", { ascending: false }),
+        // The hot-path lookup: am I currently clocked in anywhere?
+        supabase
+          .from("time_entries")
+          .select("*")
+          .eq("user_id", session.user.id)
+          .is("clock_out", null)
+          .maybeSingle(),
       ]);
       if (!alive) return;
       setJobs(jobsRes.data || []);
@@ -5377,6 +5999,8 @@ function AppInner() {
       setClients(cliRes.data || []);
       setDailyLogs(logRes.data || []);
       setJobPhotos(photoRes.data || []);
+      setTimeEntries(timeRes.data || []);
+      setActiveTimeEntry(activeRes.data || null);
       setDataLoaded(true);
     })();
     return () => { alive = false; };
@@ -5386,11 +6010,65 @@ function AppInner() {
     setJobs((j) => [job, ...j]);
   }, []);
 
+  // ============================================================
+  // TIME TRACKING — handlers wired to ClockWidget in the header
+  // ============================================================
+  const handleClockIn = useCallback(async (job, notes) => {
+    if (!session?.user) return;
+    if (activeTimeEntry) {
+      toast.warn("You're already clocked in. Clock out first.");
+      return;
+    }
+    const { data, error } = await supabase
+      .from("time_entries")
+      .insert({
+        job_id: job.id,
+        user_id: session.user.id,
+        user_email: session.user.email,
+        clock_in: new Date().toISOString(),
+        notes: notes || null,
+      })
+      .select()
+      .single();
+    if (!error && data) {
+      setActiveTimeEntry(data);
+      setTimeEntries((prev) => [data, ...prev]);
+      toast.success(`Clocked in to ${job.name}`);
+    } else {
+      toast.error("Clock-in failed: " + (error?.message || "Unknown error"));
+    }
+  }, [session, activeTimeEntry, toast]);
+
+  const handleClockOut = useCallback(async (notes) => {
+    if (!activeTimeEntry) return;
+    const clockOut = new Date();
+    const clockIn = new Date(activeTimeEntry.clock_in);
+    const durationMin = Math.round((clockOut - clockIn) / 60000);
+    const { data, error } = await supabase
+      .from("time_entries")
+      .update({
+        clock_out: clockOut.toISOString(),
+        duration_minutes: durationMin,
+        notes: notes || activeTimeEntry.notes,
+      })
+      .eq("id", activeTimeEntry.id)
+      .select()
+      .single();
+    if (!error && data) {
+      setActiveTimeEntry(null);
+      setTimeEntries((prev) => prev.map((e) => (e.id === data.id ? data : e)));
+      toast.success(`Clocked out — ${formatDuration(durationMin)} logged`);
+    } else {
+      toast.error("Clock-out failed: " + (error?.message || "Unknown error"));
+    }
+  }, [activeTimeEntry, toast]);
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setSession(null);
     setJobs([]); setEstimates([]); setClients([]);
     setDailyLogs([]); setJobPhotos([]);
+    setTimeEntries([]); setActiveTimeEntry(null);
     setDataLoaded(false);
     toast.info("Signed out");
   };
@@ -5486,6 +6164,12 @@ function AppInner() {
           </nav>
 
           <div className="flex items-center gap-2">
+            <ClockWidget
+              activeEntry={activeTimeEntry}
+              jobs={jobs}
+              onClockIn={handleClockIn}
+              onClockOut={handleClockOut}
+            />
             <span className="hidden md:block text-xs text-slate-500 truncate max-w-[180px]">
               {session.user?.email}
             </span>
@@ -5582,6 +6266,9 @@ function AppInner() {
                 dailyLogs={dailyLogs}
                 settings={settings}
                 estimates={estimates}
+                timeEntries={timeEntries}
+                setTimeEntries={setTimeEntries}
+                activeTimeEntry={activeTimeEntry}
               />
             )}
             {tab === "Daily" && (
