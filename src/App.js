@@ -1,8 +1,27 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useRef } from "react";
 import {
   ResponsiveContainer, LineChart, Line,
-  XAxis, YAxis, Tooltip, BarChart, Bar
+  XAxis, YAxis, Tooltip, BarChart, Bar,
+  CartesianGrid
 } from "recharts";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  // Navigation & UI
+  LayoutDashboard, Calculator, Briefcase, ClipboardList, Calendar, Users, Settings as SettingsIcon, LogOut, Menu, X,
+  // Actions
+  Plus, Trash2, Pencil, Copy, Check, ChevronRight, ChevronDown, Save, Search, Filter,
+  // Files & docs
+  FileText, FileEdit, Download, Upload, Camera, Image as ImageIcon,
+  // Status & flags
+  AlertCircle, AlertTriangle, CheckCircle2, XCircle, Info, Clock, Zap, Lock, Unlock,
+  // Construction
+  HardHat, Hammer, Wrench, Truck, Package,
+  // Money & data
+  DollarSign, TrendingUp, TrendingDown, BarChart3, PieChart, Receipt,
+  // Misc
+  ExternalLink, Eye, EyeOff, ArrowRight, ArrowLeft, RefreshCw, MoreHorizontal,
+  CloudSun, Thermometer, MapPin, Phone, Mail, Building2
+} from "lucide-react";
 import { supabase } from "./supabase";
 
 // ================================================================
@@ -27,7 +46,101 @@ import { supabase } from "./supabase";
 //   - Estimates state lifted to App (fixes Dashboard staleness)
 //   - useCallback wrapping (fixes stale closures)
 //   - Session refresh listener
+// POLISH PASS (Tier A):
+//   - Lucide React icons throughout (replaces emoji)
+//   - Framer Motion for tab transitions, card fade-ins, KPI count-up
+//   - Dashboard hierarchy redesigned (Daily Log Status > Burn Rate > Pipeline)
+//   - Recharts cursor bug fixed (cursor={false} on Tooltip)
+//   - Custom scrollbar styling via global style tag
+//   - Skeleton loading states for slow async
+//   - Subtle KPI gradients based on meaning
+//   - CountUp animation for KPI numbers on mount
 // ================================================================
+
+// ================================================================
+// GLOBAL STYLES
+// Custom scrollbars + keyframes injected once at app root
+// ================================================================
+function GlobalStyles() {
+  return (
+    <style>{`
+      /* Custom scrollbar - dark theme friendly */
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: #0f172a; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 5px; border: 2px solid #0f172a; }
+      ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+      /* Slide-in animation for toasts */
+      @keyframes slideIn {
+        from { transform: translateX(20px); opacity: 0; }
+        to   { transform: translateX(0);    opacity: 1; }
+      }
+
+      /* Skeleton shimmer */
+      @keyframes shimmer {
+        0% { background-position: -1000px 0; }
+        100% { background-position: 1000px 0; }
+      }
+      .skeleton {
+        background: linear-gradient(90deg, #1e293b 0%, #334155 50%, #1e293b 100%);
+        background-size: 1000px 100%;
+        animation: shimmer 2s infinite linear;
+      }
+
+      /* Smoother focus rings on inputs */
+      input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.4);
+      }
+
+      /* Disable spinners on number inputs (cleaner look) */
+      input[type="number"]::-webkit-inner-spin-button,
+      input[type="number"]::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      input[type="number"] { -moz-appearance: textfield; }
+    `}</style>
+  );
+}
+
+// ================================================================
+// ANIMATED NUMBER (CountUp)
+// Smoothly animates from 0 to target value on mount
+// ================================================================
+function CountUp({ value, prefix = "", duration = 0.8, format = (v) => v.toLocaleString() }) {
+  const [display, setDisplay] = useState(0);
+  const startTimeRef = useRef(null);
+  const rafRef = useRef(null);
+  const targetRef = useRef(value);
+
+  useEffect(() => {
+    targetRef.current = value;
+    startTimeRef.current = null;
+    const startValue = display;
+
+    const animate = (timestamp) => {
+      if (!startTimeRef.current) startTimeRef.current = timestamp;
+      const elapsed = (timestamp - startTimeRef.current) / 1000;
+      const progress = Math.min(elapsed / duration, 1);
+      // ease-out cubic
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const current = startValue + (targetRef.current - startValue) * eased;
+      setDisplay(current);
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(animate);
+      } else {
+        setDisplay(targetRef.current);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, duration]);
+
+  return <span>{prefix}{format(display)}</span>;
+}
 
 // ================================================================
 // COMPANY HELPER
@@ -243,32 +356,42 @@ function ToastProvider({ children }) {
   };
 
   const icons = {
-    success: "✓",
-    error:   "✕",
-    info:    "ℹ",
-    warn:    "⚠",
+    success: CheckCircle2,
+    error:   XCircle,
+    info:    Info,
+    warn:    AlertTriangle,
   };
 
   return (
     <ToastContext.Provider value={{ toasts, toast }}>
       {children}
       <div className="fixed top-4 right-4 z-[1000] flex flex-col gap-2 max-w-sm pointer-events-none">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`pointer-events-auto px-4 py-3 rounded-lg border-2 shadow-xl backdrop-blur-md
-              flex items-start gap-3 animate-[slideIn_0.2s_ease-out] ${styles[t.type]}`}
-          >
-            <span className="text-lg leading-none mt-0.5">{icons[t.type]}</span>
-            <p className="flex-1 text-sm">{t.message}</p>
-            <button
-              onClick={() => dismiss(t.id)}
-              className="text-lg leading-none opacity-60 hover:opacity-100"
-            >
-              ×
-            </button>
-          </div>
-        ))}
+        <AnimatePresence>
+          {toasts.map((t) => {
+            const Icon = icons[t.type];
+            return (
+              <motion.div
+                key={t.id}
+                initial={{ opacity: 0, x: 24, scale: 0.96 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: 24, scale: 0.96 }}
+                transition={{ duration: 0.18 }}
+                className={`pointer-events-auto px-4 py-3 rounded-lg border-2 shadow-xl backdrop-blur-md
+                  flex items-start gap-3 ${styles[t.type]}`}
+              >
+                <Icon className="w-5 h-5 shrink-0 mt-0.5" />
+                <p className="flex-1 text-sm">{t.message}</p>
+                <button
+                  onClick={() => dismiss(t.id)}
+                  className="opacity-60 hover:opacity-100 transition-opacity"
+                  aria-label="Dismiss"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
       </div>
     </ToastContext.Provider>
   );
@@ -311,47 +434,59 @@ function ConfirmProvider({ children }) {
   return (
     <ConfirmContext.Provider value={{ confirm }}>
       {children}
-      {state && (
-        <div
-          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
-          onClick={() => handleClose(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+      <AnimatePresence>
+        {state && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+            onClick={() => handleClose(false)}
           >
-            <h3 className={`text-lg font-bold mb-2 ${state.danger ? "text-rose-300" : "text-slate-100"}`}>
-              {state.danger && "⚠ "}{state.title}
-            </h3>
-            {state.message && (
-              <p className="text-slate-400 text-sm mb-3 whitespace-pre-line">{state.message}</p>
-            )}
-            {state.details && (
-              <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-3 mb-4 text-xs text-slate-300 max-h-40 overflow-y-auto">
-                {state.details}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 8 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+            >
+              <h3 className={`text-lg font-bold mb-2 flex items-center gap-2 ${state.danger ? "text-rose-300" : "text-slate-100"}`}>
+                {state.danger && <AlertTriangle className="w-5 h-5" />}
+                {state.title}
+              </h3>
+              {state.message && (
+                <p className="text-slate-400 text-sm mb-3 whitespace-pre-line">{state.message}</p>
+              )}
+              {state.details && (
+                <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-3 mb-4 text-xs text-slate-300 max-h-40 overflow-y-auto whitespace-pre-line">
+                  {state.details}
+                </div>
+              )}
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => handleClose(false)}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+                >
+                  {state.cancelText}
+                </button>
+                <button
+                  onClick={() => handleClose(true)}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-1.5 ${
+                    state.danger
+                      ? "bg-rose-600 text-white hover:bg-rose-500"
+                      : "bg-amber-400 text-black hover:bg-amber-500"
+                  }`}
+                >
+                  {state.danger && <Trash2 className="w-4 h-4" />}
+                  {state.confirmText}
+                </button>
               </div>
-            )}
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => handleClose(false)}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
-              >
-                {state.cancelText}
-              </button>
-              <button
-                onClick={() => handleClose(true)}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                  state.danger
-                    ? "bg-rose-600 text-white hover:bg-rose-500"
-                    : "bg-amber-400 text-black hover:bg-amber-500"
-                }`}
-              >
-                {state.confirmText}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </ConfirmContext.Provider>
   );
 }
@@ -990,6 +1125,7 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState("");
   const [error, setError]       = useState("");
   const [loading, setLoading]   = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -1006,48 +1142,82 @@ function LoginScreen({ onLogin }) {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 flex items-center justify-center px-4">
-      <div className="w-full max-w-sm space-y-6">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="w-full max-w-sm space-y-6"
+      >
         <div className="text-center">
-          <div className="w-14 h-14 bg-amber-400 rounded-xl flex items-center justify-center mx-auto mb-4">
-            <span className="text-black font-black text-2xl">N</span>
+          <div className="w-16 h-16 bg-gradient-to-br from-amber-400 to-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-2xl shadow-amber-900/40">
+            <span className="text-black font-black text-3xl">N</span>
           </div>
           <h1 className="text-2xl font-bold text-white">Northshore OS</h1>
-          <p className="text-slate-500 text-sm mt-1">Internal access only</p>
+          <p className="text-slate-500 text-xs mt-1 uppercase tracking-widest">
+            Internal Access Only
+          </p>
         </div>
         <Card>
           <CardContent className="p-6">
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Email</label>
+                <label className="block text-xs text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <Mail className="w-3.5 h-3.5" /> Email
+                </label>
                 <Inp
                   type="email"
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
+                  autoFocus
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Password</label>
-                <Inp
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+                <label className="block text-xs text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5" /> Password
+                </label>
+                <div className="relative">
+                  <Inp
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
               {error && (
-                <p className="text-rose-400 text-xs bg-rose-900/20 border border-rose-800 rounded-lg px-3 py-2">
-                  {error}
-                </p>
+                <motion.div
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="text-rose-300 text-xs bg-rose-900/30 border border-rose-800 rounded-lg px-3 py-2.5 flex items-start gap-2"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </motion.div>
               )}
               <Btn
                 type="submit"
                 disabled={loading}
-                className="w-full bg-amber-400 text-black hover:bg-amber-500 font-semibold"
+                className="w-full bg-amber-400 text-black hover:bg-amber-500 font-semibold flex items-center justify-center gap-2"
               >
-                {loading ? "Signing in..." : "Sign In"}
+                {loading ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Signing in...
+                  </>
+                ) : (
+                  <>
+                    Sign In <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
               </Btn>
             </form>
           </CardContent>
@@ -1055,7 +1225,7 @@ function LoginScreen({ onLogin }) {
         <p className="text-center text-xs text-slate-700">
           © {new Date().getFullYear()} Northshore Mechanical & Construction LLC
         </p>
-      </div>
+      </motion.div>
     </div>
   );
 }
@@ -1070,14 +1240,15 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
   const arTotal     = approvedEst.reduce((s, e) => s + (e.grand_total || 0), 0);
   const pipeline    = openEst.reduce((s, e) => s + (e.grand_total || 0), 0);
 
-  // Daily log tracking — find active jobs missing today's log
+  // Daily log tracking
   const today = new Date().toISOString().slice(0, 10);
   const jobsLoggedToday = new Set(
     dailyLogs.filter((l) => l.log_date === today).map((l) => l.job_id)
   );
   const jobsMissingTodayLog = activeJobs.filter((j) => !jobsLoggedToday.has(j.id));
+  const allLogged = activeJobs.length > 0 && jobsMissingTodayLog.length === 0;
 
-  const graphData = estimates.slice(-10).map((e) => ({
+  const graphData = estimates.slice(-10).reverse().map((e) => ({
     name:  formatDate(e.created_at),
     total: Math.round(e.grand_total || 0),
   }));
@@ -1093,73 +1264,195 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
     return c ? c.name : null;
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <span className="text-xs text-slate-500">
-          {new Date().toLocaleDateString("en-US", {
-            weekday: "long", month: "long", day: "numeric",
-          })}
-        </span>
-      </div>
+  // Animation variants for staggered card entry
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: { staggerChildren: 0.06, delayChildren: 0.05 },
+    },
+  };
+  const itemVariants = {
+    hidden: { opacity: 0, y: 12 },
+    show:   { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" } },
+  };
 
-      {/* DAILY LOG WARNING BANNER */}
-      {jobsMissingTodayLog.length > 0 && (
-        <div
-          onClick={() => setTab && setTab("Daily")}
-          className="cursor-pointer bg-gradient-to-r from-amber-900/40 to-amber-800/20 border-2 border-amber-500/60 rounded-xl p-4 hover:from-amber-900/50 hover:to-amber-800/30 transition-all"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-amber-500 rounded-lg flex items-center justify-center text-black font-black text-xl shrink-0">
-                !
+  return (
+    <motion.div
+      className="space-y-6"
+      variants={containerVariants}
+      initial="hidden"
+      animate="show"
+    >
+      {/* HEADER */}
+      <motion.div variants={itemVariants} className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <LayoutDashboard className="w-6 h-6 text-amber-400" />
+            Dashboard
+          </h1>
+          <p className="text-slate-500 text-xs mt-1">
+            {new Date().toLocaleDateString("en-US", {
+              weekday: "long", year: "numeric", month: "long", day: "numeric",
+            })}
+          </p>
+        </div>
+      </motion.div>
+
+      {/* PRIORITY 1 — DAILY LOG STATUS BANNER */}
+      {activeJobs.length > 0 && (
+        <motion.div variants={itemVariants}>
+          {jobsMissingTodayLog.length > 0 ? (
+            <div
+              onClick={() => setTab && setTab("Daily")}
+              className="cursor-pointer bg-gradient-to-r from-amber-900/40 via-amber-800/30 to-orange-900/30
+                border-2 border-amber-500/60 rounded-xl p-5 hover:border-amber-400 transition-all
+                shadow-lg shadow-amber-900/20"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-amber-500 rounded-xl flex items-center justify-center shrink-0 shadow-lg shadow-amber-900/40">
+                    <AlertTriangle className="w-6 h-6 text-black" strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <p className="text-amber-200 font-semibold text-base">
+                      {jobsMissingTodayLog.length} {jobsMissingTodayLog.length === 1 ? "job needs" : "jobs need"} today\'s log
+                    </p>
+                    <p className="text-amber-200/60 text-xs mt-0.5">
+                      {jobsMissingTodayLog.slice(0, 3).map((j) => j.name).join(" • ")}
+                      {jobsMissingTodayLog.length > 3 && ` • +${jobsMissingTodayLog.length - 3} more`}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-amber-300 text-sm font-medium shrink-0">
+                  Log Now
+                  <ArrowRight className="w-4 h-4" />
+                </div>
               </div>
-              <div>
-                <p className="text-amber-300 font-semibold text-sm">
-                  {jobsMissingTodayLog.length} active {jobsMissingTodayLog.length === 1 ? "job needs" : "jobs need"} today's log
-                </p>
-                <p className="text-amber-200/70 text-xs mt-0.5">
-                  {jobsMissingTodayLog.slice(0, 3).map((j) => j.name).join(" • ")}
-                  {jobsMissingTodayLog.length > 3 && ` • +${jobsMissingTodayLog.length - 3} more`}
+            </div>
+          ) : (
+            <div className="bg-gradient-to-r from-emerald-900/30 to-emerald-800/20 border border-emerald-700/40 rounded-xl p-4 flex items-center gap-3">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+              <div className="flex-1">
+                <p className="text-emerald-300 text-sm font-medium">
+                  All {activeJobs.length} active job{activeJobs.length > 1 ? "s" : ""} logged for today.
                 </p>
               </div>
             </div>
-            <span className="text-amber-300 text-sm font-medium shrink-0">
-              Log Now →
-            </span>
-          </div>
-        </div>
+          )}
+        </motion.div>
       )}
 
-      {/* KPI CARDS */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { label: "Active Jobs",   value: activeJobs.length,  sub: "in progress" },
-          { label: "Open Bids",     value: openEst.length,     sub: "awaiting approval" },
-          { label: "Pipeline",      value: currency(pipeline), sub: "estimated value" },
-          { label: "A/R Approved",  value: currency(arTotal),  sub: "ready to invoice" },
-        ].map((k) => (
-          <Card key={k.label}>
-            <CardContent className="p-5">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{k.label}</p>
-              <p className="text-3xl font-bold text-amber-400">{k.value}</p>
-              <p className="text-xs text-slate-600 mt-1">{k.sub}</p>
+      {/* PRIORITY 2 — KPI CARDS WITH GRADIENTS */}
+      <motion.div variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard
+          icon={<Briefcase className="w-5 h-5" />}
+          label="Active Jobs"
+          value={activeJobs.length}
+          sub="in progress"
+          gradient="from-blue-900/40 to-slate-900/40 border-blue-700/30"
+          iconColor="text-blue-400"
+          numeric
+          onClick={() => setTab && setTab("Jobs")}
+        />
+        <KpiCard
+          icon={<FileText className="w-5 h-5" />}
+          label="Open Bids"
+          value={openEst.length}
+          sub="awaiting approval"
+          gradient="from-amber-900/40 to-slate-900/40 border-amber-700/30"
+          iconColor="text-amber-400"
+          numeric
+          onClick={() => setTab && setTab("Estimator")}
+        />
+        <KpiCard
+          icon={<TrendingUp className="w-5 h-5" />}
+          label="Pipeline"
+          value={pipeline}
+          sub="estimated value"
+          gradient="from-purple-900/40 to-slate-900/40 border-purple-700/30"
+          iconColor="text-purple-400"
+          currency
+        />
+        <KpiCard
+          icon={<DollarSign className="w-5 h-5" />}
+          label="A/R Approved"
+          value={arTotal}
+          sub="ready to invoice"
+          gradient="from-emerald-900/40 to-slate-900/40 border-emerald-700/30"
+          iconColor="text-emerald-400"
+          currency
+        />
+      </motion.div>
+
+      {/* PRIORITY 3 — ACTIVE JOB BURN RATES (only if active) */}
+      {activeJobs.length > 0 && (
+        <motion.div variants={itemVariants}>
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                  <Hammer className="w-4 h-4 text-amber-400" />
+                  Active Jobs — Burn Rate
+                </h2>
+                <button
+                  onClick={() => setTab && setTab("Jobs")}
+                  className="text-xs text-slate-500 hover:text-amber-400 flex items-center gap-1 transition-colors"
+                >
+                  View all <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="space-y-4">
+                {activeJobs.map((j) => {
+                  const pct   = j.budget ? Math.min(100, ((j.actual || 0) / j.budget) * 100) : 0;
+                  const color = pct < 70 ? "bg-emerald-500" : pct < 90 ? "bg-amber-400" : "bg-rose-500";
+                  const textColor = pct < 70 ? "text-emerald-400" : pct < 90 ? "text-amber-400" : "text-rose-400";
+                  return (
+                    <div key={j.id}>
+                      <div className="flex justify-between items-center text-sm mb-1.5">
+                        <div className="min-w-0 flex-1 mr-2">
+                          <span className="text-slate-200 font-medium truncate">{j.name}</span>
+                          {j.client_id && getClientName(j.client_id) && (
+                            <span className="text-slate-500 text-xs ml-2">
+                              — {getClientName(j.client_id)}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-slate-400 text-xs whitespace-nowrap">
+                          {currency(j.actual || 0)}{" "}
+                          <span className="text-slate-600">/ {currency(j.budget)}</span>
+                        </span>
+                      </div>
+                      <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                        <motion.div
+                          className={`h-2 rounded-full ${color}`}
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          transition={{ duration: 0.8, ease: "easeOut" }}
+                        />
+                      </div>
+                      <p className={`text-xs mt-1 ${textColor}`}>{round2(pct)}% burned</p>
+                    </div>
+                  );
+                })}
+              </div>
             </CardContent>
           </Card>
-        ))}
-      </div>
+        </motion.div>
+      )}
 
-      {/* CHARTS */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* CHARTS ROW */}
+      <motion.div variants={itemVariants} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardContent className="p-6">
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-amber-400" />
               Estimate Trend
             </h2>
             {graphData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={graphData}>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={graphData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                   <XAxis dataKey="name" stroke="#475569" tick={{ fontSize: 11 }} />
                   <YAxis
                     stroke="#475569"
@@ -1167,34 +1460,46 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
                     tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
                   />
                   <Tooltip
+                    cursor={{ stroke: "#334155", strokeWidth: 1, strokeDasharray: "3 3" }}
                     formatter={(v) => currency(v)}
-                    contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
+                    contentStyle={{
+                      background: "#0f172a",
+                      border: "1px solid #334155",
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
                   />
                   <Line
                     type="monotone"
                     dataKey="total"
                     stroke="#f59e0b"
-                    strokeWidth={2}
-                    dot={{ fill: "#f59e0b", r: 3 }}
+                    strokeWidth={2.5}
+                    dot={{ fill: "#f59e0b", r: 4, strokeWidth: 0 }}
+                    activeDot={{ r: 6, stroke: "#f59e0b", strokeWidth: 2, fill: "#0f172a" }}
                   />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[200px] flex items-center justify-center text-slate-600 text-sm">
-                Create estimates to see trend
-              </div>
+              <EmptyState
+                icon={<BarChart3 className="w-8 h-8 text-slate-700" />}
+                message="Create estimates to see your trend"
+                action={() => setTab && setTab("Estimator")}
+                actionLabel="Build first estimate"
+              />
             )}
           </CardContent>
         </Card>
 
         <Card>
           <CardContent className="p-6">
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <PieChart className="w-4 h-4 text-amber-400" />
               Budget vs Actual
             </h2>
             {jobData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={jobData}>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={jobData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                   <XAxis dataKey="name" stroke="#475569" tick={{ fontSize: 10 }} />
                   <YAxis
                     stroke="#475569"
@@ -1202,134 +1507,143 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
                     tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
                   />
                   <Tooltip
+                    cursor={false}
                     formatter={(v) => currency(v)}
-                    contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
+                    contentStyle={{
+                      background: "#0f172a",
+                      border: "1px solid #334155",
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
                   />
-                  <Bar dataKey="budget" fill="#1e293b" radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="actual" fill="#f59e0b" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="budget" fill="#334155" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="actual" fill="#f59e0b" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[200px] flex items-center justify-center text-slate-600 text-sm">
-                Add jobs to see comparison
+              <EmptyState
+                icon={<Briefcase className="w-8 h-8 text-slate-700" />}
+                message="Add jobs to compare budget vs actual"
+                action={() => setTab && setTab("Jobs")}
+                actionLabel="Add a job"
+              />
+            )}
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* RECENT ESTIMATES */}
+      <motion.div variants={itemVariants}>
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <FileText className="w-4 h-4 text-amber-400" />
+                Recent Estimates
+              </h2>
+              <button
+                onClick={() => setTab && setTab("Estimator")}
+                className="text-xs text-slate-500 hover:text-amber-400 flex items-center gap-1 transition-colors"
+              >
+                View all <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+            {estimates.length === 0 ? (
+              <EmptyState
+                icon={<FileText className="w-8 h-8 text-slate-700" />}
+                message="No estimates yet"
+                action={() => setTab && setTab("Estimator")}
+                actionLabel="Build your first estimate"
+              />
+            ) : (
+              <div className="space-y-1">
+                {estimates.slice(0, 5).map((e) => (
+                  <div
+                    key={e.id}
+                    className="flex justify-between items-center py-2.5 px-2 rounded-lg hover:bg-slate-800/40 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="text-slate-200 text-sm font-medium">{e.name}</span>
+                      {e.client_id && getClientName(e.client_id) && (
+                        <span className="text-slate-500 text-xs ml-2">
+                          — {getClientName(e.client_id)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-amber-400 font-semibold text-sm">
+                        {currency(e.grand_total)}
+                      </span>
+                      <Badge
+                        label={e.status}
+                        color={
+                          e.status === "Approved" ? "green" :
+                          e.status === "Sent"     ? "yellow" :
+                          e.status === "Lost"     ? "red"    : "gray"
+                        }
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </CardContent>
         </Card>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// KPI Card with gradient + animated number
+function KpiCard({ icon, label, value, sub, gradient, iconColor, numeric, currency: isCurrency, onClick }) {
+  const formatter = isCurrency
+    ? (v) => `$${Math.round(v).toLocaleString()}`
+    : (v) => Math.round(v).toString();
+
+  return (
+    <motion.div
+      whileHover={onClick ? { y: -2 } : {}}
+      transition={{ duration: 0.15 }}
+      onClick={onClick}
+      className={`rounded-xl border bg-gradient-to-br ${gradient} ${onClick ? "cursor-pointer" : ""}
+        shadow-lg backdrop-blur-sm`}
+    >
+      <div className="p-5">
+        <div className="flex items-start justify-between mb-2">
+          <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">{label}</p>
+          <div className={`${iconColor} opacity-80`}>{icon}</div>
+        </div>
+        <p className="text-3xl font-bold text-white tabular-nums">
+          {numeric || isCurrency ? (
+            <CountUp
+              value={Number(value) || 0}
+              format={formatter}
+              duration={0.6}
+            />
+          ) : (
+            value
+          )}
+        </p>
+        <p className="text-xs text-slate-500 mt-1">{sub}</p>
       </div>
+    </motion.div>
+  );
+}
 
-      {/* BURN RATE */}
-      <Card>
-        <CardContent className="p-6">
-          <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">
-            Active Jobs — Burn Rate
-          </h2>
-          {activeJobs.length === 0 && (
-            <div className="py-6 text-center">
-              <p className="text-slate-500 text-sm mb-2">No active jobs yet.</p>
-              {estimates.filter((e) => e.status === "Approved").length > 0 ? (
-                <p className="text-slate-600 text-xs">
-                  You have approved estimates ready to start.
-                </p>
-              ) : openEst.length > 0 ? (
-                <button
-                  onClick={() => setTab && setTab("Estimator")}
-                  className="text-amber-400 hover:text-amber-300 text-xs font-medium underline"
-                >
-                  Approve a draft estimate to start your first job →
-                </button>
-              ) : (
-                <button
-                  onClick={() => setTab && setTab("Estimator")}
-                  className="text-amber-400 hover:text-amber-300 text-xs font-medium underline"
-                >
-                  Build your first estimate →
-                </button>
-              )}
-            </div>
-          )}
-          <div className="space-y-4">
-            {activeJobs.map((j) => {
-              const pct   = j.budget ? Math.min(100, ((j.actual || 0) / j.budget) * 100) : 0;
-              const color = pct < 70 ? "bg-emerald-500" : pct < 90 ? "bg-yellow-400" : "bg-rose-500";
-              return (
-                <div key={j.id}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <div>
-                      <span className="text-slate-200 font-medium">{j.name}</span>
-                      {j.client_id && getClientName(j.client_id) && (
-                        <span className="text-slate-500 text-xs ml-2">
-                          — {getClientName(j.client_id)}
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-slate-400">
-                      {currency(j.actual || 0)}{" "}
-                      <span className="text-slate-600">/ {currency(j.budget)}</span>
-                    </span>
-                  </div>
-                  <div className="w-full bg-slate-800 h-2 rounded-full">
-                    <div
-                      className={`h-2 rounded-full transition-all ${color}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <p className="text-xs text-slate-600 mt-0.5">{round2(pct)}% burned</p>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* RECENT ESTIMATES */}
-      <Card>
-        <CardContent className="p-6">
-          <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">
-            Recent Estimates
-          </h2>
-          {estimates.length === 0 && (
-            <div className="py-4 text-center">
-              <p className="text-slate-500 text-sm mb-2">No estimates yet.</p>
-              <button
-                onClick={() => setTab && setTab("Estimator")}
-                className="text-amber-400 hover:text-amber-300 text-xs font-medium underline"
-              >
-                Build your first estimate →
-              </button>
-            </div>
-          )}
-          <div className="space-y-2">
-            {estimates.slice(0, 5).map((e) => (
-              <div
-                key={e.id}
-                className="flex justify-between items-center py-2 border-b border-slate-800 last:border-0"
-              >
-                <div>
-                  <span className="text-slate-200 text-sm">{e.name}</span>
-                  {e.client_id && getClientName(e.client_id) && (
-                    <span className="text-slate-500 text-xs ml-2">
-                      — {getClientName(e.client_id)}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-amber-400 font-semibold text-sm">
-                    {currency(e.grand_total)}
-                  </span>
-                  <Badge
-                    label={e.status}
-                    color={
-                      e.status === "Approved" ? "green" :
-                      e.status === "Sent"     ? "yellow" : "gray"
-                    }
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+// Empty state with icon + action
+function EmptyState({ icon, message, action, actionLabel }) {
+  return (
+    <div className="h-[180px] flex flex-col items-center justify-center gap-3 text-center">
+      {icon}
+      <p className="text-slate-500 text-sm">{message}</p>
+      {action && actionLabel && (
+        <button
+          onClick={action}
+          className="text-amber-400 hover:text-amber-300 text-xs font-medium underline flex items-center gap-1"
+        >
+          {actionLabel} <ArrowRight className="w-3 h-3" />
+        </button>
+      )}
     </div>
   );
 }
@@ -2223,34 +2537,34 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
                         <div className="flex flex-wrap gap-1 mt-2">
                           <button
                             onClick={() => handleGenerateProposal(e)}
-                            className="flex-1 text-[10px] py-1 px-2 bg-amber-400/10 text-amber-400 hover:bg-amber-400/20 border border-amber-900/30 rounded"
+                            className="flex-1 text-[11px] py-1.5 px-2 bg-amber-400/10 text-amber-400 hover:bg-amber-400/20 border border-amber-900/30 rounded flex items-center justify-center gap-1 transition-colors"
                             title="Generate PDF Proposal"
                           >
-                            📄 PDF
+                            <FileText className="w-3 h-3" /> PDF
                           </button>
                           <button
                             onClick={() => loadEstimate(e)}
                             disabled={isEditing}
-                            className={`text-[10px] py-1 px-2 rounded border ${
+                            className={`text-[11px] py-1.5 px-2 rounded border flex items-center gap-1 transition-colors ${
                               isEditing
                                 ? "bg-slate-800 text-slate-600 border-slate-800 cursor-not-allowed"
                                 : "bg-blue-900/20 text-blue-300 hover:bg-blue-900/40 border-blue-900/40"
                             }`}
                             title={isEditing ? "Currently editing" : "Edit this estimate"}
                           >
-                            ✏ Edit
+                            <Pencil className="w-3 h-3" /> Edit
                           </button>
                           <button
                             onClick={() => duplicateEstimate(e)}
-                            className="text-[10px] py-1 px-2 bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 rounded"
+                            className="text-[11px] py-1.5 px-2 bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 rounded flex items-center transition-colors"
                             title="Duplicate as new draft"
                           >
-                            ⎘
+                            <Copy className="w-3 h-3" />
                           </button>
                           <select
                             value={e.status}
                             onChange={(ev) => updateEstimateStatus(e, ev.target.value)}
-                            className="text-[10px] py-1 px-1 bg-slate-900 text-slate-300 border border-slate-700 rounded"
+                            className="text-[11px] py-1.5 px-1.5 bg-slate-900 text-slate-300 border border-slate-700 rounded"
                             title="Change status"
                           >
                             {["Draft", "Sent", "Approved", "Lost"].map((s) => (
@@ -2259,10 +2573,10 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, j
                           </select>
                           <button
                             onClick={() => deleteEstimate(e)}
-                            className="text-[10px] py-1 px-2 bg-rose-900/20 text-rose-400 hover:bg-rose-900/40 border border-rose-900/40 rounded"
+                            className="text-[11px] py-1.5 px-2 bg-rose-900/20 text-rose-400 hover:bg-rose-900/40 border border-rose-900/40 rounded flex items-center transition-colors"
                             title="Delete permanently"
                           >
-                            🗑
+                            <Trash2 className="w-3 h-3" />
                           </button>
                         </div>
                       </div>
@@ -3067,9 +3381,10 @@ function Jobs({ jobs, setJobs, clients, settings, session }) {
                                   <Btn
                                     onClick={(e) => { e.stopPropagation(); handleGenerateCO(j); }}
                                     className="w-full text-xs bg-amber-400/10 text-amber-400
-                                      hover:bg-amber-400/20 border border-amber-900/30"
+                                      hover:bg-amber-400/20 border border-amber-900/30 flex items-center justify-center gap-1.5"
                                   >
-                                    📄 Generate Change Order
+                                    <FileEdit className="w-3.5 h-3.5" />
+                                    Generate Change Order
                                   </Btn>
                                 </div>
                               </div>
@@ -3668,7 +3983,15 @@ function PhotoUploader({ jobId, dailyLogId = null, session, onUploaded, compact 
               : "bg-amber-400 text-black hover:bg-amber-500"
           }`}
         >
-          {uploading ? "Uploading..." : "📷 Upload Photos"}
+          {uploading ? (
+            <span className="flex items-center gap-1.5">
+              <RefreshCw className="w-4 h-4 animate-spin" /> Uploading...
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5">
+              <Camera className="w-4 h-4" /> Upload Photos
+            </span>
+          )}
           <input
             type="file"
             accept="image/*"
@@ -4404,6 +4727,7 @@ export default function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
+        <GlobalStyles />
         <AppInner />
       </ConfirmProvider>
     </ToastProvider>
@@ -4420,6 +4744,7 @@ function AppInner() {
   const [loading, setLoading]   = useState(true);
   const [session, setSession]   = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Load persisted settings from localStorage
   useEffect(() => {
@@ -4500,54 +4825,156 @@ function AppInner() {
     );
   }
 
+  // Daily log warning count for header badge
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const jobsLoggedTodayHeader = new Set(
+    dailyLogs.filter((l) => l.log_date === todayStr).map((l) => l.job_id)
+  );
+  const dailyAlertCount = jobs
+    .filter((j) => j.status === "Active" && !jobsLoggedTodayHeader.has(j.id))
+    .length;
+
+  const tabIcons = {
+    Dashboard: LayoutDashboard,
+    Estimator: Calculator,
+    Jobs:      Briefcase,
+    Daily:     ClipboardList,
+    Schedule:  Calendar,
+    Clients:   Users,
+    Settings:  SettingsIcon,
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 text-white">
       {/* HEADER */}
-      <header className="sticky top-0 z-50 bg-black/80 backdrop-blur-sm border-b border-gray-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-amber-400 rounded-lg flex items-center justify-center">
-            <span className="text-black font-black text-sm">N</span>
+      <header className="sticky top-0 z-50 bg-black/85 backdrop-blur-md border-b border-gray-800/80 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 max-w-screen-2xl mx-auto">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-amber-400 to-amber-500 rounded-lg flex items-center justify-center shadow-lg shadow-amber-900/40">
+              <span className="text-black font-black text-base">N</span>
+            </div>
+            <div>
+              <h1 className="text-base font-bold leading-none tracking-tight">Northshore OS</h1>
+              <p className="text-[10px] text-slate-500 leading-none mt-1 uppercase tracking-wider">
+                Mechanical & Construction
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-base font-bold leading-none">Northshore OS</h1>
-            <p className="text-xs text-slate-600 leading-none mt-0.5">
-              Mechanical & Construction
-            </p>
-          </div>
-        </div>
-        <nav className="flex flex-wrap gap-1.5 items-center">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                tab === t
-                  ? "bg-amber-400 text-black shadow-md shadow-amber-900/30"
-                  : "text-gray-400 hover:text-white hover:bg-gray-800"
-              }`}
-            >
-              {t}
-            </button>
-          ))}
+
+          {/* Mobile hamburger */}
           <button
-            onClick={handleLogout}
-            className="px-3 py-1.5 rounded-lg text-sm font-medium text-slate-500
-              hover:text-rose-400 hover:bg-rose-900/20 transition-all ml-2 border border-slate-800"
+            onClick={() => setMobileNavOpen((o) => !o)}
+            className="md:hidden p-2 rounded-lg text-slate-300 hover:bg-slate-800"
+            aria-label="Menu"
           >
-            Sign Out
+            {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
-        </nav>
+
+          {/* Desktop nav */}
+          <nav className="hidden md:flex items-center gap-1">
+            {TABS.map((t) => {
+              const Icon = tabIcons[t];
+              const active = tab === t;
+              const showAlert = t === "Daily" && dailyAlertCount > 0;
+              return (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`relative px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                    active
+                      ? "bg-amber-400 text-black shadow-md shadow-amber-900/30"
+                      : "text-gray-400 hover:text-white hover:bg-gray-800"
+                  }`}
+                >
+                  {Icon && <Icon className="w-4 h-4" />}
+                  {t}
+                  {showAlert && !active && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-lg">
+                      {dailyAlertCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              onClick={handleLogout}
+              className="px-3 py-2 rounded-lg text-sm font-medium text-slate-500
+                hover:text-rose-400 hover:bg-rose-900/20 transition-all ml-2 border border-slate-800
+                flex items-center gap-2"
+              title="Sign out"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden lg:inline">Sign Out</span>
+            </button>
+          </nav>
+        </div>
+
+        {/* Mobile nav drawer */}
+        <AnimatePresence>
+          {mobileNavOpen && (
+            <motion.nav
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="md:hidden overflow-hidden"
+            >
+              <div className="pt-3 pb-1 grid grid-cols-2 gap-2">
+                {TABS.map((t) => {
+                  const Icon = tabIcons[t];
+                  const active = tab === t;
+                  const showAlert = t === "Daily" && dailyAlertCount > 0;
+                  return (
+                    <button
+                      key={t}
+                      onClick={() => { setTab(t); setMobileNavOpen(false); }}
+                      className={`relative px-3 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 ${
+                        active
+                          ? "bg-amber-400 text-black"
+                          : "bg-slate-900 text-gray-400 border border-slate-800"
+                      }`}
+                    >
+                      {Icon && <Icon className="w-4 h-4" />}
+                      {t}
+                      {showAlert && !active && (
+                        <span className="ml-1 px-1.5 py-0.5 bg-rose-500 text-white rounded-full text-[10px] font-bold">
+                          {dailyAlertCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => { handleLogout(); setMobileNavOpen(false); }}
+                  className="col-span-2 px-3 py-2.5 rounded-lg text-sm font-medium text-rose-400 bg-rose-900/20 border border-rose-900/40 flex items-center justify-center gap-2"
+                >
+                  <LogOut className="w-4 h-4" /> Sign Out
+                </button>
+              </div>
+            </motion.nav>
+          )}
+        </AnimatePresence>
       </header>
 
       {/* MAIN */}
       <main className="flex-1 p-4 md:p-6 max-w-screen-2xl mx-auto w-full">
-        {tab === "Dashboard"  && <Dashboard  jobs={jobs} estimates={estimates} clients={clients} dailyLogs={dailyLogs} setTab={setTab} />}
-        {tab === "Estimator"  && <Estimator  settings={settings} estimates={estimates} setEstimates={setEstimates} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
-        {tab === "Jobs"       && <Jobs       jobs={jobs} setJobs={setJobs} clients={clients} settings={settings} session={session} />}
-        {tab === "Daily"      && <DailyLogs  jobs={jobs} clients={clients} dailyLogs={dailyLogs} setDailyLogs={setDailyLogs} session={session} />}
-        {tab === "Schedule"   && <Schedule   jobs={jobs} />}
-        {tab === "Clients"    && <Clients    clients={clients} setClients={setClients} jobs={jobs} estimates={estimates} />}
-        {tab === "Settings"   && <Settings   settings={settings} setSettings={setSettings} />}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={tab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.2 }}
+          >
+            {tab === "Dashboard"  && <Dashboard  jobs={jobs} estimates={estimates} clients={clients} dailyLogs={dailyLogs} setTab={setTab} />}
+            {tab === "Estimator"  && <Estimator  settings={settings} estimates={estimates} setEstimates={setEstimates} onJobCreated={handleJobCreated} clients={clients} jobs={jobs} />}
+            {tab === "Jobs"       && <Jobs       jobs={jobs} setJobs={setJobs} clients={clients} settings={settings} session={session} />}
+            {tab === "Daily"      && <DailyLogs  jobs={jobs} clients={clients} dailyLogs={dailyLogs} setDailyLogs={setDailyLogs} session={session} />}
+            {tab === "Schedule"   && <Schedule   jobs={jobs} />}
+            {tab === "Clients"    && <Clients    clients={clients} setClients={setClients} jobs={jobs} estimates={estimates} />}
+            {tab === "Settings"   && <Settings   settings={settings} setSettings={setSettings} />}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
       {/* FOOTER */}
