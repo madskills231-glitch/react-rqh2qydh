@@ -12,12 +12,14 @@ import {
   Plus, Trash2, Pencil, Copy, Check, ChevronRight, ChevronDown, Save, Search, Filter,
   // Files & docs
   FileText, FileEdit, Download, Upload, Camera, Image as ImageIcon,
+  FolderOpen, Folder, Archive, FileBox, FileCheck2, Share2, History,
   // Status & flags
   AlertCircle, AlertTriangle, CheckCircle2, XCircle, Info, Clock, Zap, Lock, Unlock,
   // Construction
   HardHat, Hammer, Wrench, Truck, Package,
   // Money & data
   DollarSign, TrendingUp, TrendingDown, BarChart3, PieChart, Receipt,
+  ShieldCheck, IdCard, Stamp, BookOpen,
   // Misc
   ExternalLink, Eye, EyeOff, ArrowRight, ArrowLeft, RefreshCw, MoreHorizontal,
   CloudSun, Thermometer, MapPin, Phone, Mail, Building2
@@ -69,6 +71,20 @@ import { supabase } from "./supabase";
 //   - Dashboard active session card
 //   - Computed labor cost per job (settings.laborRate × actual hours)
 //   - time_entries table required (see time-tracking-migration.sql)
+// DOCUMENTS VAULT (Round 1 v1):
+//   - Top-level Vault tab — central business-document repository
+//   - Categories: Articles, Insurance, License, Vehicle, Tax, Employee,
+//     Permit, Receipt, Other (with custom icons + colors)
+//   - Drag-and-drop OR click-to-upload to non-public storage bucket
+//   - Expiration tracking with Dashboard alert widget (30-day window)
+//   - Version history (renew GLI policy → old version archived)
+//   - Time-limited share links (e.g. 7-day COI link to GC)
+//   - Audit log of every view/download/share (multi-user readiness)
+//   - Soft delete (preserved history, restorable)
+//   - Tag system w/ free-form metadata
+//   - company_documents + company_document_events + company_document_shares
+//     tables required (see documents-vault-migration.sql)
+//   - Storage bucket "company-docs" (NOT public) required — see SQL footer
 // ================================================================
 
 // ================================================================
@@ -2054,6 +2070,1095 @@ function ManualTimeEntryModal({ isOpen, jobId, jobName, existingEntry, onClose, 
 }
 
 // ================================================================
+// DOCUMENTS VAULT
+// Central business-document repository. Articles of org, insurance,
+// vehicles, IDs, tax returns, permits, receipts. NON-PUBLIC storage,
+// expiration tracking, version history, time-limited share links,
+// full audit log.
+//
+// Architecture decisions worth knowing:
+// - storage bucket "company-docs" is private (auth-gated). Files are
+//   never embedded as <img src=...> directly — we always go through
+//   createSignedUrl() with a short TTL.
+// - "supersede" replaces an old doc with a new version. The old one
+//   sticks around (superseded_at set) so we keep a paper trail of
+//   every GLI policy ever bound, every license renewal, etc.
+// - Soft delete only. Real delete would defeat the whole point of a
+//   compliance vault. Future: add a hard-delete-after-N-years sweep.
+// - Audit log captures every view, download, and share. When you
+//   eventually have employees, this is who-saw-what for sensitive
+//   docs like tax returns and IDs.
+// ================================================================
+
+const DOC_CATEGORIES = [
+  { id: "Articles",  label: "Articles of Org", icon: BookOpen,    color: "text-purple-400",  bg: "bg-purple-900/20",  border: "border-purple-700/40" },
+  { id: "Insurance", label: "Insurance",       icon: ShieldCheck, color: "text-emerald-400", bg: "bg-emerald-900/20", border: "border-emerald-700/40" },
+  { id: "License",   label: "Licenses",        icon: Stamp,       color: "text-amber-400",   bg: "bg-amber-900/20",   border: "border-amber-700/40" },
+  { id: "Vehicle",   label: "Vehicles",        icon: Truck,       color: "text-blue-400",    bg: "bg-blue-900/20",    border: "border-blue-700/40" },
+  { id: "Tax",       label: "Tax",             icon: DollarSign,  color: "text-rose-400",    bg: "bg-rose-900/20",    border: "border-rose-700/40" },
+  { id: "Employee",  label: "Employee / IDs",  icon: IdCard,      color: "text-cyan-400",    bg: "bg-cyan-900/20",    border: "border-cyan-700/40" },
+  { id: "Permit",    label: "Permits",         icon: FileCheck2,  color: "text-orange-400",  bg: "bg-orange-900/20",  border: "border-orange-700/40" },
+  { id: "Receipt",   label: "Receipts",        icon: Receipt,     color: "text-yellow-400",  bg: "bg-yellow-900/20",  border: "border-yellow-700/40" },
+  { id: "Other",     label: "Other",           icon: FileBox,     color: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700" },
+];
+
+const getCategoryMeta = (id) =>
+  DOC_CATEGORIES.find((c) => c.id === id) || DOC_CATEGORIES[DOC_CATEGORIES.length - 1];
+
+// Format file size as B/KB/MB/GB
+const formatBytes = (bytes) => {
+  if (!bytes) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
+// Days between today and an ISO date. Negative = past, positive = future.
+const daysUntil = (isoDate) => {
+  if (!isoDate) return null;
+  const target = new Date(isoDate);
+  const now = new Date();
+  // Normalize to midnight UTC for both
+  target.setUTCHours(0, 0, 0, 0);
+  const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  return Math.round((target - today) / (1000 * 60 * 60 * 24));
+};
+
+// Audit-log event helper. Fire-and-forget — failures shouldn't block UX.
+const logDocEvent = async (documentId, eventType, metadata = {}) => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    await supabase.from("company_document_events").insert({
+      document_id: documentId,
+      event_type: eventType,
+      user_id: session?.user?.id,
+      user_email: session?.user?.email,
+      metadata,
+    });
+  } catch (e) {
+    console.warn("audit log failed:", e);
+  }
+};
+
+// Generate a URL-safe random token for share links
+const makeShareToken = () => {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+// ================================================================
+// DOCUMENT UPLOAD MODAL — drag-and-drop OR click-to-pick
+// ================================================================
+function DocumentUploadModal({ isOpen, supersedeOf, onClose, onUploaded }) {
+  const toast = useToast();
+  const [file, setFile]         = useState(null);
+  const [title, setTitle]       = useState("");
+  const [category, setCategory] = useState("Other");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [tags, setTags]         = useState("");
+  const [notes, setNotes]       = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Pre-fill from supersedeOf when renewing a doc
+  useEffect(() => {
+    if (!isOpen) return;
+    if (supersedeOf) {
+      setTitle(supersedeOf.title || "");
+      setCategory(supersedeOf.category || "Other");
+      setTags((supersedeOf.tags || []).join(", "));
+      setNotes("");
+      setExpiresAt("");
+      setFile(null);
+    } else {
+      setFile(null); setTitle(""); setCategory("Other");
+      setExpiresAt(""); setTags(""); setNotes("");
+    }
+  }, [isOpen, supersedeOf]);
+
+  const handleFile = (f) => {
+    if (!f) return;
+    if (f.size > 50 * 1024 * 1024) {
+      toast.error("File over 50MB. Compress or split before uploading.");
+      return;
+    }
+    setFile(f);
+    // Auto-fill title from filename if empty (strip extension)
+    if (!title) {
+      setTitle(f.name.replace(/\.[^.]+$/, ""));
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    handleFile(e.dataTransfer.files?.[0]);
+  };
+
+  const handleSave = async () => {
+    if (!file) { toast.error("Pick a file first"); return; }
+    if (!title.trim()) { toast.error("Title is required"); return; }
+    setUploading(true);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) throw new Error("Not signed in");
+
+      // Build storage path: docs/<category>/<timestamp>-<safe-filename>
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const path = `docs/${category}/${Date.now()}-${safeName}`;
+
+      const { error: uploadErr } = await supabase.storage
+        .from("company-docs")
+        .upload(path, file, { contentType: file.type, upsert: false });
+      if (uploadErr) throw uploadErr;
+
+      const tagArray = tags.split(",").map((t) => t.trim()).filter(Boolean);
+
+      // Build the new row. If superseding, parent_doc_id + version+1
+      const newRow = {
+        title: title.trim(),
+        category,
+        tags: tagArray,
+        notes: notes.trim() || null,
+        storage_path: path,
+        file_size: file.size,
+        mime_type: file.type,
+        expires_at: expiresAt || null,
+        version: supersedeOf ? (supersedeOf.version || 1) + 1 : 1,
+        parent_doc_id: supersedeOf?.id || null,
+        uploaded_by: session.user.id,
+        uploaded_by_email: session.user.email,
+      };
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from("company_documents")
+        .insert(newRow)
+        .select()
+        .single();
+      if (insertErr) throw insertErr;
+
+      // If superseding, mark the old version
+      if (supersedeOf) {
+        await supabase
+          .from("company_documents")
+          .update({ superseded_at: new Date().toISOString() })
+          .eq("id", supersedeOf.id);
+      }
+
+      await logDocEvent(inserted.id, supersedeOf ? "edit" : "view", {
+        action: supersedeOf ? "supersede" : "upload",
+        previous_version_id: supersedeOf?.id,
+      });
+
+      onUploaded(inserted, supersedeOf?.id);
+      toast.success(supersedeOf ? `New version uploaded (v${inserted.version})` : "Uploaded");
+    } catch (err) {
+      toast.error("Upload failed: " + (err.message || "Unknown error"));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4 py-8 overflow-y-auto"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-lg w-full p-6 my-auto"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Upload className="w-5 h-5 text-amber-400" />
+              {supersedeOf ? `Renew: ${supersedeOf.title}` : "Upload Document"}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              {supersedeOf
+                ? `Old version (v${supersedeOf.version}) will be archived but preserved.`
+                : "PDFs, images, Word docs, spreadsheets — up to 50MB."}
+            </p>
+
+            {/* DRAG-AND-DROP ZONE */}
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`mb-4 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+                dragging
+                  ? "border-amber-400 bg-amber-900/20"
+                  : file
+                    ? "border-emerald-700 bg-emerald-900/20"
+                    : "border-slate-700 bg-slate-950/40 hover:border-slate-600"
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                onChange={(e) => handleFile(e.target.files?.[0])}
+                className="hidden"
+              />
+              {file ? (
+                <div className="text-sm">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400 mx-auto mb-1" />
+                  <p className="text-emerald-300 font-medium truncate">{file.name}</p>
+                  <p className="text-xs text-slate-500 mt-1">{formatBytes(file.size)}</p>
+                  <p className="text-xs text-amber-400 mt-2">Click to swap</p>
+                </div>
+              ) : (
+                <div className="text-sm text-slate-400">
+                  <Upload className="w-7 h-7 mx-auto mb-2 text-slate-600" />
+                  <p>Drag a file here, or <span className="text-amber-400">click to pick</span></p>
+                  <p className="text-xs text-slate-600 mt-1">Max 50MB</p>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Title *</label>
+                <Inp
+                  placeholder="e.g. GLI Policy 2026-2027"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Category</label>
+                  <Sel value={category} onChange={(e) => setCategory(e.target.value)}>
+                    {DOC_CATEGORIES.map((c) => (
+                      <option key={c.id} value={c.id}>{c.label}</option>
+                    ))}
+                  </Sel>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">
+                    Expires <span className="text-slate-600">(optional)</span>
+                  </label>
+                  <Inp type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">
+                  Tags <span className="text-slate-600">(comma-separated, optional)</span>
+                </label>
+                <Inp
+                  placeholder="e.g. truck-1, primary, 2026"
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                <textarea
+                  rows={2}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="What's in this doc, where it came from, anything to remember..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button
+                onClick={onClose}
+                disabled={uploading}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={uploading || !file || !title.trim()}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {uploading ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /> Uploading...</>
+                ) : (
+                  <><Upload className="w-4 h-4" /> Upload</>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// DOCUMENT DETAIL DRAWER — view, download, share, edit, supersede
+// ================================================================
+function DocumentDetailDrawer({ doc, allDocs, onClose, onUpdated, onDeleted, onSupersede }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle]     = useState(doc?.title || "");
+  const [category, setCategory] = useState(doc?.category || "Other");
+  const [tags, setTags]       = useState((doc?.tags || []).join(", "));
+  const [expiresAt, setExpiresAt] = useState(doc?.expires_at || "");
+  const [notes, setNotes]     = useState(doc?.notes || "");
+  const [showShare, setShowShare] = useState(false);
+  const [signedUrl, setSignedUrl] = useState(null);
+
+  // Fetch a 60s signed URL for download
+  useEffect(() => {
+    if (!doc?.storage_path) return;
+    let alive = true;
+    (async () => {
+      const { data, error } = await supabase.storage
+        .from("company-docs")
+        .createSignedUrl(doc.storage_path, 60);
+      if (alive && !error && data) {
+        setSignedUrl(data.signedUrl);
+        logDocEvent(doc.id, "view");
+      }
+    })();
+    return () => { alive = false; };
+  }, [doc?.id, doc?.storage_path]);
+
+  // Sync editing state when a different doc loads
+  useEffect(() => {
+    if (!doc) return;
+    setTitle(doc.title || "");
+    setCategory(doc.category || "Other");
+    setTags((doc.tags || []).join(", "));
+    setExpiresAt(doc.expires_at || "");
+    setNotes(doc.notes || "");
+    setEditing(false);
+    setShowShare(false);
+  }, [doc?.id]);
+
+  if (!doc) return null;
+
+  // Find prior versions in the chain
+  const versionChain = [];
+  let cursor = doc;
+  while (cursor) {
+    versionChain.unshift(cursor);
+    cursor = cursor.parent_doc_id ? allDocs.find((d) => d.id === cursor.parent_doc_id) : null;
+    if (versionChain.length > 50) break; // safety
+  }
+
+  const handleSaveEdit = async () => {
+    const tagArray = tags.split(",").map((t) => t.trim()).filter(Boolean);
+    const { data, error } = await supabase
+      .from("company_documents")
+      .update({
+        title: title.trim(),
+        category,
+        tags: tagArray,
+        expires_at: expiresAt || null,
+        notes: notes.trim() || null,
+      })
+      .eq("id", doc.id)
+      .select()
+      .single();
+    if (!error && data) {
+      onUpdated(data);
+      logDocEvent(doc.id, "edit");
+      setEditing(false);
+      toast.success("Document updated");
+    } else {
+      toast.error("Update failed: " + (error?.message || "Unknown error"));
+    }
+  };
+
+  const handleDelete = async () => {
+    const ok = await confirm({
+      title: "Archive this document?",
+      message: "It will be hidden from the vault but preserved in case you need to restore it.",
+      confirmText: "Archive",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase
+      .from("company_documents")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", doc.id);
+    if (!error) {
+      logDocEvent(doc.id, "delete");
+      onDeleted(doc.id);
+      toast.success("Archived");
+    } else {
+      toast.error("Archive failed: " + error.message);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!signedUrl) return;
+    logDocEvent(doc.id, "download");
+    window.open(signedUrl, "_blank");
+  };
+
+  const meta = getCategoryMeta(doc.category);
+  const Icon = meta.icon;
+  const expDays = daysUntil(doc.expires_at);
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[998] flex items-stretch justify-end"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-slate-900 border-l-2 border-slate-700 w-full max-w-lg overflow-y-auto"
+        >
+          {/* Header */}
+          <div className={`${meta.bg} ${meta.border} border-b px-5 py-4 flex items-start justify-between gap-3`}>
+            <div className="flex items-start gap-3 min-w-0">
+              <Icon className={`w-7 h-7 ${meta.color} shrink-0 mt-0.5`} />
+              <div className="min-w-0">
+                {editing ? (
+                  <Inp value={title} onChange={(e) => setTitle(e.target.value)} className="text-base font-bold mb-1" />
+                ) : (
+                  <h3 className="text-base font-bold text-slate-100 break-words">{doc.title}</h3>
+                )}
+                <p className={`text-xs ${meta.color}`}>{meta.label} • v{doc.version}</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-white shrink-0 p-1">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4">
+
+            {/* EXPIRATION CALLOUT */}
+            {doc.expires_at && expDays !== null && (
+              <div className={`rounded-lg border px-3 py-2 text-sm ${
+                expDays < 0
+                  ? "bg-rose-900/30 border-rose-700/50 text-rose-200"
+                  : expDays <= 30
+                    ? "bg-amber-900/30 border-amber-700/50 text-amber-200"
+                    : "bg-slate-800/40 border-slate-700 text-slate-300"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>
+                    {expDays < 0
+                      ? `Expired ${Math.abs(expDays)} day${Math.abs(expDays) === 1 ? "" : "s"} ago`
+                      : expDays === 0
+                        ? "Expires today"
+                        : `Expires in ${expDays} day${expDays === 1 ? "" : "s"}`}
+                    {" • "}
+                    {new Date(doc.expires_at).toLocaleDateString([], { dateStyle: "medium" })}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* ACTIONS */}
+            {!editing && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={handleDownload}
+                  disabled={!signedUrl}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download
+                </button>
+                <button
+                  onClick={() => setShowShare(true)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1.5"
+                >
+                  <Share2 className="w-3.5 h-3.5" /> Share Link
+                </button>
+                <button
+                  onClick={() => onSupersede(doc)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50 border border-emerald-800/50 transition-colors flex items-center gap-1.5"
+                  title="Upload a newer version (e.g. renewed insurance policy)"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Renew
+                </button>
+                <button
+                  onClick={() => setEditing(true)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1.5"
+                >
+                  <Pencil className="w-3.5 h-3.5" /> Edit
+                </button>
+                <button
+                  onClick={handleDelete}
+                  className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-900/30 text-rose-300 hover:bg-rose-900/50 border border-rose-800/50 transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Archive
+                </button>
+              </div>
+            )}
+
+            {/* EDIT FORM */}
+            {editing ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Category</label>
+                    <Sel value={category} onChange={(e) => setCategory(e.target.value)}>
+                      {DOC_CATEGORIES.map((c) => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </Sel>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Expires</label>
+                    <Inp type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Tags</label>
+                  <Inp value={tags} onChange={(e) => setTags(e.target.value)} placeholder="comma-separated" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                  <textarea
+                    rows={3}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setEditing(false)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSaveEdit}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors flex items-center gap-1.5"
+                  >
+                    <Save className="w-3.5 h-3.5" /> Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* METADATA */}
+                <Card>
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">Uploaded</span>
+                      <span className="text-slate-300">
+                        {new Date(doc.created_at).toLocaleDateString([], { dateStyle: "medium" })}
+                        {doc.uploaded_by_email && ` by ${doc.uploaded_by_email.split("@")[0]}`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">File size</span>
+                      <span className="text-slate-300">{formatBytes(doc.file_size)}</span>
+                    </div>
+                    {doc.mime_type && (
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-500">Type</span>
+                        <span className="text-slate-300 truncate ml-2 max-w-[60%]">{doc.mime_type}</span>
+                      </div>
+                    )}
+                    {doc.tags?.length > 0 && (
+                      <div className="pt-1">
+                        <p className="text-xs text-slate-500 mb-1">Tags</p>
+                        <div className="flex flex-wrap gap-1">
+                          {doc.tags.map((tag) => (
+                            <span key={tag} className="px-2 py-0.5 text-[10px] bg-slate-800 text-slate-300 rounded border border-slate-700">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {doc.notes && (
+                      <div className="pt-1 border-t border-slate-800 mt-2">
+                        <p className="text-xs text-slate-500 mb-1">Notes</p>
+                        <p className="text-sm text-slate-300 whitespace-pre-wrap">{doc.notes}</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* VERSION HISTORY */}
+                {versionChain.length > 1 && (
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <History className="w-4 h-4 text-slate-500" />
+                        <p className="text-xs uppercase tracking-wider text-slate-500">Version History</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        {versionChain.map((v) => (
+                          <div
+                            key={v.id}
+                            className={`flex items-center justify-between text-xs px-2 py-1.5 rounded ${
+                              v.id === doc.id ? "bg-amber-900/20 text-amber-300" : "bg-slate-800/40 text-slate-400"
+                            }`}
+                          >
+                            <span>v{v.version} {v.id === doc.id && "(current)"}</span>
+                            <span>{new Date(v.created_at).toLocaleDateString([], { dateStyle: "short" })}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            )}
+
+            {/* SHARE PANEL */}
+            {showShare && (
+              <ShareLinkPanel
+                doc={doc}
+                onClose={() => setShowShare(false)}
+                onCreated={() => toast.success("Share link copied to clipboard")}
+              />
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// SHARE LINK PANEL — generate time-limited share URL
+// ================================================================
+function ShareLinkPanel({ doc, onClose, onCreated }) {
+  const toast = useToast();
+  const [days, setDays] = useState(7);
+  const [recipientNote, setRecipientNote] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [link, setLink] = useState(null);
+
+  // NOTE on the limitation:
+  // True public share links require a public-facing endpoint that resolves
+  // a share token to a signed storage URL. Northshore OS doesn't have
+  // a backend route for that yet, so v1 generates a Supabase storage
+  // signed URL valid for `days` days. This URL is shareable but anyone
+  // with it can access until it expires. We still record the share in
+  // the DB for audit purposes and for future revocation when we add
+  // a proper share-token resolver.
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const seconds = Math.max(1, Math.min(days, 30)) * 24 * 60 * 60;
+      const { data, error } = await supabase.storage
+        .from("company-docs")
+        .createSignedUrl(doc.storage_path, seconds);
+      if (error) throw error;
+      const token = makeShareToken();
+      const expiresAt = new Date(Date.now() + seconds * 1000).toISOString();
+
+      // Record the share for audit + future revocation
+      await supabase.from("company_document_shares").insert({
+        document_id: doc.id,
+        share_token: token,
+        expires_at: expiresAt,
+        created_by: session?.user?.id,
+        created_by_email: session?.user?.email,
+        recipient_note: recipientNote.trim() || null,
+      });
+      await logDocEvent(doc.id, "share", { days, recipient_note: recipientNote });
+
+      setLink(data.signedUrl);
+      try {
+        await navigator.clipboard.writeText(data.signedUrl);
+        onCreated();
+      } catch {
+        // clipboard might be blocked — that's fine, the link is shown below
+      }
+    } catch (err) {
+      toast.error("Share generation failed: " + (err.message || "Unknown error"));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Share2 className="w-4 h-4 text-slate-500" />
+            <p className="text-xs uppercase tracking-wider text-slate-500">Generate Share Link</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {!link ? (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Expires after</label>
+              <Sel value={days} onChange={(e) => setDays(Number(e.target.value))}>
+                <option value={1}>1 day</option>
+                <option value={3}>3 days</option>
+                <option value={7}>7 days (typical for COIs)</option>
+                <option value={14}>14 days</option>
+                <option value={30}>30 days (max)</option>
+              </Sel>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Note (private, for your records)</label>
+              <Inp
+                placeholder="e.g. Sent to GC for Murphy bid"
+                value={recipientNote}
+                onChange={(e) => setRecipientNote(e.target.value)}
+              />
+            </div>
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="w-full px-3 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
+            >
+              {generating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
+              {generating ? "Generating..." : "Generate Link"}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-emerald-400 flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Link copied to clipboard. Valid {days} day{days === 1 ? "" : "s"}.
+            </p>
+            <div className="bg-slate-950/60 border border-slate-700 rounded p-2 max-h-20 overflow-y-auto">
+              <p className="text-[10px] font-mono text-slate-400 break-all">{link}</p>
+            </div>
+            <button
+              onClick={() => navigator.clipboard.writeText(link)}
+              className="w-full px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Copy className="w-3.5 h-3.5" /> Copy again
+            </button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ================================================================
+// DOCUMENTS VAULT — top-level tab content
+// ================================================================
+function DocumentsVault({ documents, setDocuments }) {
+  const toast = useToast();
+  const [search, setSearch]           = useState("");
+  const [activeCategory, setActiveCategory] = useState("All");
+  const [showArchived, setShowArchived] = useState(false);
+  const [uploadOpen, setUploadOpen]   = useState(false);
+  const [supersedeOf, setSupersedeOf] = useState(null);
+  const [detailDoc, setDetailDoc]     = useState(null);
+
+  // Active = not soft-deleted AND not superseded (latest version only)
+  const visible = documents.filter((d) => {
+    if (!showArchived && (d.deleted_at || d.superseded_at)) return false;
+    if (showArchived && !d.deleted_at && !d.superseded_at) return false;
+    if (activeCategory !== "All" && d.category !== activeCategory) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      const hay = [d.title, d.notes, ...(d.tags || [])].filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  // Counts per category for the sidebar (only on active docs)
+  const categoryCounts = {};
+  for (const d of documents) {
+    if (d.deleted_at || d.superseded_at) continue;
+    categoryCounts[d.category] = (categoryCounts[d.category] || 0) + 1;
+  }
+  const totalActive = Object.values(categoryCounts).reduce((a, b) => a + b, 0);
+
+  // Expiring-soon sweep (within 30 days OR already expired)
+  const expiringSoon = documents.filter((d) => {
+    if (d.deleted_at || d.superseded_at || !d.expires_at) return false;
+    const days = daysUntil(d.expires_at);
+    return days !== null && days <= 30;
+  }).sort((a, b) => daysUntil(a.expires_at) - daysUntil(b.expires_at));
+
+  const handleUploaded = (newDoc, supersededId) => {
+    setDocuments((prev) => {
+      const next = prev.map((d) =>
+        d.id === supersededId
+          ? { ...d, superseded_at: new Date().toISOString() }
+          : d
+      );
+      return [newDoc, ...next];
+    });
+    setUploadOpen(false);
+    setSupersedeOf(null);
+    setDetailDoc(newDoc);
+  };
+
+  const handleUpdated = (updated) => {
+    setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+    setDetailDoc(updated);
+  };
+
+  const handleDeleted = (id) => {
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, deleted_at: new Date().toISOString() } : d))
+    );
+    setDetailDoc(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* HEADER */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
+            <FolderOpen className="w-6 h-6 text-amber-400" />
+            Documents Vault
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {totalActive} active document{totalActive === 1 ? "" : "s"}
+            {expiringSoon.length > 0 && (
+              <span className="text-amber-400 ml-2">
+                • {expiringSoon.length} expiring soon
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowArchived(!showArchived)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1.5 ${
+              showArchived
+                ? "bg-slate-800 text-slate-200 border-slate-600"
+                : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+            }`}
+          >
+            <Archive className="w-3.5 h-3.5" />
+            {showArchived ? "Show Active" : "Archived"}
+          </button>
+          <button
+            onClick={() => { setSupersedeOf(null); setUploadOpen(true); }}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors flex items-center gap-1.5"
+          >
+            <Upload className="w-4 h-4" /> Upload
+          </button>
+        </div>
+      </div>
+
+      {/* EXPIRATION ALERTS */}
+      {!showArchived && expiringSoon.length > 0 && (
+        <Card className="border-amber-700/50">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400" />
+              <p className="text-sm font-semibold text-amber-300">Expiring Soon</p>
+            </div>
+            <div className="space-y-1.5">
+              {expiringSoon.slice(0, 5).map((d) => {
+                const days = daysUntil(d.expires_at);
+                const meta = getCategoryMeta(d.category);
+                const Icon = meta.icon;
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() => setDetailDoc(d)}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border text-left transition-colors ${
+                      days < 0
+                        ? "bg-rose-900/20 border-rose-800/50 hover:bg-rose-900/30"
+                        : "bg-amber-900/10 border-amber-800/40 hover:bg-amber-900/20"
+                    }`}
+                  >
+                    <Icon className={`w-4 h-4 shrink-0 ${meta.color}`} />
+                    <span className="text-sm text-slate-200 truncate flex-1">{d.title}</span>
+                    <span className={`text-xs font-mono shrink-0 ${days < 0 ? "text-rose-400" : "text-amber-400"}`}>
+                      {days < 0 ? `${Math.abs(days)}d ago` : days === 0 ? "today" : `${days}d`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* CATEGORY GRID + SEARCH */}
+      <div className="flex flex-col lg:flex-row gap-4">
+
+        {/* LEFT: category sidebar */}
+        <div className="lg:w-56 shrink-0">
+          <div className="grid grid-cols-3 lg:grid-cols-1 gap-1.5">
+            <button
+              onClick={() => setActiveCategory("All")}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                activeCategory === "All"
+                  ? "bg-amber-400 text-black"
+                  : "bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800"
+              }`}
+            >
+              <Folder className="w-3.5 h-3.5" />
+              <span>All</span>
+              <span className="ml-auto opacity-70">{totalActive}</span>
+            </button>
+            {DOC_CATEGORIES.map((c) => {
+              const Icon = c.icon;
+              const count = categoryCounts[c.id] || 0;
+              const isActive = activeCategory === c.id;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setActiveCategory(c.id)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    isActive
+                      ? `${c.bg} ${c.color} border ${c.border}`
+                      : "bg-slate-900 text-slate-400 hover:bg-slate-800 border border-slate-800"
+                  }`}
+                >
+                  <Icon className={`w-3.5 h-3.5 ${isActive ? "" : c.color}`} />
+                  <span className="truncate">{c.label}</span>
+                  {count > 0 && <span className="ml-auto opacity-70">{count}</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* RIGHT: search + grid */}
+        <div className="flex-1 min-w-0 space-y-3">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <Inp
+              placeholder="Search title, tags, notes..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          {visible.length === 0 ? (
+            <Card>
+              <CardContent className="p-12 text-center">
+                <FolderOpen className="w-12 h-12 text-slate-700 mx-auto mb-3" />
+                <p className="text-slate-400 text-sm">
+                  {showArchived
+                    ? "No archived documents."
+                    : search.trim() || activeCategory !== "All"
+                      ? "No documents match your filters."
+                      : "Vault is empty. Upload your first document to get started."}
+                </p>
+                {!showArchived && !search.trim() && activeCategory === "All" && (
+                  <button
+                    onClick={() => setUploadOpen(true)}
+                    className="mt-4 px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    <Upload className="w-4 h-4" /> Upload First Document
+                  </button>
+                )}
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {visible.map((d) => {
+                const meta = getCategoryMeta(d.category);
+                const Icon = meta.icon;
+                const expDays = daysUntil(d.expires_at);
+                const isExpiring = expDays !== null && expDays <= 30;
+                const isExpired = expDays !== null && expDays < 0;
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() => setDetailDoc(d)}
+                    className={`text-left p-3 rounded-lg border transition-all hover:scale-[1.02] hover:border-slate-600 ${meta.bg} ${meta.border}`}
+                  >
+                    <div className="flex items-start gap-2 mb-2">
+                      <Icon className={`w-5 h-5 ${meta.color} shrink-0 mt-0.5`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-slate-100 truncate">{d.title}</p>
+                        <p className={`text-[10px] ${meta.color}`}>
+                          {meta.label}{d.version > 1 && ` • v${d.version}`}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-slate-500">
+                      <span>{formatBytes(d.file_size)}</span>
+                      <span>{new Date(d.created_at).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+                    </div>
+
+                    {d.expires_at && (
+                      <div className={`mt-2 px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1 ${
+                        isExpired
+                          ? "bg-rose-900/40 text-rose-300"
+                          : isExpiring
+                            ? "bg-amber-900/40 text-amber-300"
+                            : "bg-slate-800/50 text-slate-400"
+                      }`}>
+                        <Clock className="w-3 h-3 shrink-0" />
+                        {isExpired
+                          ? `Expired ${Math.abs(expDays)}d ago`
+                          : expDays === 0
+                            ? "Expires today"
+                            : `${expDays}d to expiry`}
+                      </div>
+                    )}
+
+                    {d.tags?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {d.tags.slice(0, 3).map((tag) => (
+                          <span key={tag} className="px-1.5 py-0.5 text-[9px] bg-slate-800/60 text-slate-400 rounded">
+                            {tag}
+                          </span>
+                        ))}
+                        {d.tags.length > 3 && (
+                          <span className="text-[9px] text-slate-500">+{d.tags.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* MODALS */}
+      <DocumentUploadModal
+        isOpen={uploadOpen}
+        supersedeOf={supersedeOf}
+        onClose={() => { setUploadOpen(false); setSupersedeOf(null); }}
+        onUploaded={handleUploaded}
+      />
+      {detailDoc && (
+        <DocumentDetailDrawer
+          doc={detailDoc}
+          allDocs={documents}
+          onClose={() => setDetailDoc(null)}
+          onUpdated={handleUpdated}
+          onDeleted={handleDeleted}
+          onSupersede={(d) => { setSupersedeOf(d); setUploadOpen(true); setDetailDoc(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ================================================================
 // LOGIN SCREEN
 // ================================================================
 function LoginScreen({ onLogin }) {
@@ -2169,7 +3274,7 @@ function LoginScreen({ onLogin }) {
 // ================================================================
 // DASHBOARD
 // ================================================================
-function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
+function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], setTab }) {
   const activeJobs  = jobs.filter((j) => j.status === "Active");
   const openEst     = estimates.filter((e) => e.status === "Draft" || e.status === "Sent");
   const approvedEst = estimates.filter((e) => e.status === "Approved");
@@ -2278,6 +3383,45 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], setTab }) {
           )}
         </motion.div>
       )}
+
+      {/* DOCUMENT EXPIRATION ALERTS — surfaces vault expirations on Dashboard */}
+      {(() => {
+        const expiring = documents.filter((d) => {
+          if (d.deleted_at || d.superseded_at || !d.expires_at) return false;
+          const days = daysUntil(d.expires_at);
+          return days !== null && days <= 30;
+        }).sort((a, b) => daysUntil(a.expires_at) - daysUntil(b.expires_at));
+        if (expiring.length === 0) return null;
+        const expired = expiring.filter((d) => daysUntil(d.expires_at) < 0).length;
+        return (
+          <motion.div variants={itemVariants}>
+            <button
+              onClick={() => setTab("Vault")}
+              className={`w-full text-left rounded-xl p-4 border transition-all ${
+                expired > 0
+                  ? "bg-rose-900/20 border-rose-700/50 hover:bg-rose-900/30"
+                  : "bg-amber-900/20 border-amber-700/50 hover:bg-amber-900/30"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <AlertTriangle className={`w-5 h-5 shrink-0 ${expired > 0 ? "text-rose-400" : "text-amber-400"}`} />
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${expired > 0 ? "text-rose-300" : "text-amber-300"}`}>
+                    {expired > 0
+                      ? `${expired} document${expired === 1 ? " is" : "s are"} expired`
+                      : `${expiring.length} document${expiring.length === 1 ? "" : "s"} expiring soon`}
+                  </p>
+                  <p className="text-xs text-slate-400 truncate">
+                    {expiring.slice(0, 3).map((d) => d.title).join(" • ")}
+                    {expiring.length > 3 && ` +${expiring.length - 3} more`}
+                  </p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+              </div>
+            </button>
+          </motion.div>
+        );
+      })()}
 
       {/* PRIORITY 2 — KPI CARDS WITH GRADIENTS */}
       <motion.div variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -5907,6 +7051,7 @@ const TABS = [
   { id: "Daily",     label: "Daily Logs", icon: ClipboardList },
   { id: "Schedule",  label: "Schedule",   icon: Calendar },
   { id: "Clients",   label: "Clients",    icon: Users },
+  { id: "Vault",     label: "Vault",      icon: FolderOpen },
   { id: "Settings",  label: "Settings",   icon: SettingsIcon },
 ];
 
@@ -5925,6 +7070,7 @@ function AppInner() {
   const [jobPhotos, setJobPhotos] = useState([]);
   const [timeEntries, setTimeEntries] = useState([]);
   const [activeTimeEntry, setActiveTimeEntry] = useState(null); // currently-clocked-in session for this user
+  const [documents, setDocuments] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Settings
@@ -5978,7 +7124,7 @@ function AppInner() {
     }
     let alive = true;
     (async () => {
-      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes] = await Promise.all([
+      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
         supabase.from("clients").select("*").order("name"),
@@ -5992,6 +7138,7 @@ function AppInner() {
           .eq("user_id", session.user.id)
           .is("clock_out", null)
           .maybeSingle(),
+        supabase.from("company_documents").select("*").order("created_at", { ascending: false }),
       ]);
       if (!alive) return;
       setJobs(jobsRes.data || []);
@@ -6001,6 +7148,7 @@ function AppInner() {
       setJobPhotos(photoRes.data || []);
       setTimeEntries(timeRes.data || []);
       setActiveTimeEntry(activeRes.data || null);
+      setDocuments(docsRes.data || []);
       setDataLoaded(true);
     })();
     return () => { alive = false; };
@@ -6069,6 +7217,7 @@ function AppInner() {
     setJobs([]); setEstimates([]); setClients([]);
     setDailyLogs([]); setJobPhotos([]);
     setTimeEntries([]); setActiveTimeEntry(null);
+    setDocuments([]);
     setDataLoaded(false);
     toast.info("Signed out");
   };
@@ -6242,6 +7391,7 @@ function AppInner() {
                 estimates={estimates}
                 clients={clients}
                 dailyLogs={dailyLogs}
+                documents={documents}
                 setTab={setTab}
               />
             )}
@@ -6288,6 +7438,9 @@ function AppInner() {
                 jobs={jobs}
                 estimates={estimates}
               />
+            )}
+            {tab === "Vault" && (
+              <DocumentsVault documents={documents} setDocuments={setDocuments} />
             )}
             {tab === "Settings" && (
               <Settings settings={settings} setSettings={setSettings} />
