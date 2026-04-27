@@ -75,6 +75,17 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.1.5b — Apr 27 2026 — Build hotfix
+// - Fix: v1.1.5 file had a missing `function GlobalStyles() {`
+//        declaration line. The ErrorBoundary str_replace insertion
+//        in v1.1.4 accidentally consumed the function declaration
+//        but left the body, leaving `return (` floating outside
+//        any function. node --check tolerated it; ESLint with
+//        babel-parser (what react-scripts/Vercel use) correctly
+//        rejected it: "'return' outside of function. (293:2)".
+//        Pre-flight lesson: node --check alone is insufficient —
+//        need to mimic Vercel's stricter parse before shipping.
+// ================================================================
 // NORTHSHORE OS v1.1.5 — Apr 27 2026 — clients.address unblocked
 // - SQL: clients.address column added via migration
 //        (v1.1.5-clients-address-migration.sql).
@@ -290,6 +301,7 @@ class ErrorBoundary extends React.Component {
 }
 
 
+function GlobalStyles() {
   return (
     <style>{`
       /* Custom scrollbar - dark theme friendly */
