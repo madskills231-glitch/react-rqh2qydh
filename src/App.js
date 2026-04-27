@@ -71,6 +71,15 @@ import { supabase } from "./supabase";
 //   - Dashboard active session card
 //   - Computed labor cost per job (settings.laborRate × actual hours)
 //   - time_entries table required (see time-tracking-migration.sql)
+// ================================================================
+// NORTHSHORE OS v1.0.1 — Apr 27 2026 — Documents bug fixes
+// - Fix: property_address fallback chain (job → client → placeholder)
+// - Fix: owner_name fallback chain (job → client → placeholder)
+// - Fix: notary commission expiration ≤ statement date now blocks save
+// - Fix: notary name without space (no last name) now blocks save
+// - Fix: warning blocks reflowed on word boundaries instead of mid-word
+// - Add: visible data-gap warning banners in modals before generation
+// ================================================================
 // DOCUMENTS VAULT (Round 1 v1):
 //   - Top-level Vault tab — central business-document repository
 //   - Categories: Articles, Insurance, License, Vehicle, Tax, Employee,
@@ -4687,6 +4696,12 @@ const generateLienWaiverText = (waiver) => {
     year: "numeric", month: "long", day: "numeric",
   }) : "________________";
 
+  // v1.0.1 — visible fallback placeholders for missing source data
+  const safeOwner    = (owner_name || "").trim() || "[OWNER NAME REQUIRED — UPDATE BEFORE USE]";
+  const safeAddress  = (property_address || "").trim() || "[PROPERTY ADDRESS REQUIRED — UPDATE BEFORE USE]";
+  const safeCounty   = (property_county || "").trim() || "Muskegon";
+  const safeCompany  = (contractor_name || "").trim() || "Northshore Mechanical & Construction LLC";
+
   const isPartial = waiver_type.startsWith("partial");
   const isConditional = waiver_type.endsWith("_conditional");
   const typeLabel = getWaiverMeta(waiver_type).label.toUpperCase();
@@ -4695,15 +4710,15 @@ const generateLienWaiverText = (waiver) => {
   let body = `${typeLabel} WAIVER OF LIEN
 
 State of Michigan
-County of ${property_county || "Muskegon"}
+County of ${safeCounty}
 
 `;
 
   // Pre-amount language varies by type
   if (waiver_type === "full_unconditional") {
-    body += `My/our contract with ${owner_name} to provide labor and/or materials for an improvement to the property described as:
+    body += `My/our contract with ${safeOwner} to provide labor and/or materials for an improvement to the property described as:
 
-${property_address}
+${safeAddress}
 
 has been fully paid and satisfied. By signing this waiver, all my/our construction lien rights against the above-described property are hereby waived and released in full.
 
@@ -4713,9 +4728,9 @@ Total amount received: ${fmtAmount(payment_amount)}
 For all labor and/or materials furnished through: ${fmtDate(payment_through_date)}
 `;
   } else if (waiver_type === "partial_unconditional") {
-    body += `My/our contract with ${owner_name} to provide labor and/or materials for an improvement to the property described as:
+    body += `My/our contract with ${safeOwner} to provide labor and/or materials for an improvement to the property described as:
 
-${property_address}
+${safeAddress}
 
 has been partially paid in the amount stated below. By signing this waiver, my/our construction lien rights against the above-described property are hereby waived and released to the extent of the payment received.
 
@@ -4725,9 +4740,9 @@ Amount received: ${fmtAmount(payment_amount)}
 For labor and/or materials furnished through: ${fmtDate(payment_through_date)}
 `;
   } else if (waiver_type === "full_conditional") {
-    body += `My/our contract with ${owner_name} for labor and/or materials for an improvement to the property described as:
+    body += `My/our contract with ${safeOwner} for labor and/or materials for an improvement to the property described as:
 
-${property_address}
+${safeAddress}
 
 is to be fully paid in the amount stated below. By signing this waiver, all my/our construction lien rights against the above-described property are hereby waived and released in full, BUT ONLY UPON ACTUAL RECEIPT of the payment described below in cleared funds.
 
@@ -4740,9 +4755,9 @@ For all labor and/or materials furnished through: ${fmtDate(payment_through_date
 `;
   } else {
     // partial_conditional
-    body += `My/our contract with ${owner_name} for labor and/or materials for an improvement to the property described as:
+    body += `My/our contract with ${safeOwner} for labor and/or materials for an improvement to the property described as:
 
-${property_address}
+${safeAddress}
 
 is to be partially paid in the amount stated below. By signing this waiver, my/our construction lien rights against the above-described property are hereby waived and released to the extent of the payment described below, BUT ONLY UPON ACTUAL RECEIPT of that payment in cleared funds.
 
@@ -4758,7 +4773,7 @@ For labor and/or materials furnished through: ${fmtDate(payment_through_date)}
   // Signature block common to all
   body += `
 
-Lien Claimant: ${contractor_name}
+Lien Claimant: ${safeCompany}
 
 Signature: ____________________________________________
 
@@ -4798,18 +4813,42 @@ const generateSwornStatementText = (statement) => {
     year: "numeric", month: "long", day: "numeric",
   }) : "________________";
 
+  // v1.0.1 — visible fallback placeholders for missing source data
+  const safeAddress  = (property_address || "").trim() || "[PROPERTY ADDRESS REQUIRED — UPDATE BEFORE USE]";
+  const safeCounty   = (property_county || "").trim() || "Muskegon";
+  const safeContractor = (contractor_name || "").trim() || "Northshore Mechanical & Construction LLC";
+  const safeDeponent = (deponent_name || "").trim() || "[DEPONENT NAME REQUIRED]";
+  const safeRole     = (deponent_role || "").trim() || "Owner / Member";
+
+  // v1.0.1 — wrap warnings on word boundaries (~72 chars) instead of mid-word breaks
+  const wrapWarning = (text, width = 72) => {
+    const words = text.replace(/\s+/g, " ").trim().split(" ");
+    const lines = [];
+    let line = "";
+    for (const w of words) {
+      if ((line + " " + w).trim().length > width) {
+        lines.push(line.trim());
+        line = w;
+      } else {
+        line = (line + " " + w).trim();
+      }
+    }
+    if (line) lines.push(line.trim());
+    return lines.join("\n");
+  };
+
   let body = `SWORN STATEMENT
 
 State of Michigan
-County of ${property_county || "Muskegon"}
+County of ${safeCounty}
 
-${deponent_name}, being first duly sworn, deposes and says:
+${safeDeponent}, being first duly sworn, deposes and says:
 
-That ${contractor_name} is the contractor for an improvement to the following described real property situated in ${property_county || "Muskegon"} County, Michigan:
+That ${safeContractor} is the contractor for an improvement to the following described real property situated in ${safeCounty} County, Michigan:
 
-${property_address}
+${safeAddress}
 
-I make this statement as the ${deponent_role} of the contractor to represent to the owner or lessee of the property and his or her agents that the property is free from claims of construction liens, or the possibility of construction liens, except as specifically set forth in this statement and except for claims of construction liens by laborers that may be provided under section 109 of the construction lien act, 1980 PA 497, MCL 570.1109.
+I make this statement as the ${safeRole} of the contractor to represent to the owner or lessee of the property and his or her agents that the property is free from claims of construction liens, or the possibility of construction liens, except as specifically set forth in this statement and except for claims of construction liens by laborers that may be provided under section 109 of the construction lien act, 1980 PA 497, MCL 570.1109.
 
 The following is a statement of each subcontractor and supplier, and laborer with whom the undersigned has (a) contracted, or (b) made arrangements, or (c) plans to make arrangements, in connection with the improvement to the property:
 
@@ -4845,40 +4884,26 @@ The following is a statement of each subcontractor and supplier, and laborer wit
     body += `TOTALS: Contract ${fmtAmount(totals.contract)} | Paid ${fmtAmount(totals.paid)} | Due ${fmtAmount(totals.due)}\n\n`;
   }
 
-  // Statutory warnings — verbatim from MCL 570.1110
-  body += `\n========================================================================
-WARNING TO OWNER OR LESSEE: AN OWNER OR LESSEE OF THE PROPERTY SHALL NOT
-RELY ON THIS SWORN STATEMENT TO AVOID THE CLAIM OF A SUBCONTRACTOR,
-SUPPLIER, OR LABORER WHO HAS PROVIDED A NOTICE OF FURNISHING OR A LABORER
-WHO MAY PROVIDE A NOTICE OF FURNISHING UNDER SECTION 109 OF THE
-CONSTRUCTION LIEN ACT, 1980 PA 497, MCL 570.1109, TO THE DESIGNEE OR TO
-THE OWNER OR LESSEE IF THE DESIGNEE IS NOT NAMED OR HAS DIED.
-========================================================================
-`;
+  // Statutory warnings — verbatim from MCL 570.1110, reflowed on word boundaries (v1.0.1)
+  const warning1 = wrapWarning(
+    "WARNING TO OWNER OR LESSEE: AN OWNER OR LESSEE OF THE PROPERTY SHALL NOT RELY ON THIS SWORN STATEMENT TO AVOID THE CLAIM OF A SUBCONTRACTOR, SUPPLIER, OR LABORER WHO HAS PROVIDED A NOTICE OF FURNISHING OR A LABORER WHO MAY PROVIDE A NOTICE OF FURNISHING UNDER SECTION 109 OF THE CONSTRUCTION LIEN ACT, 1980 PA 497, MCL 570.1109, TO THE DESIGNEE OR TO THE OWNER OR LESSEE IF THE DESIGNEE IS NOT NAMED OR HAS DIED."
+  );
+  body += `\n========================================================================\n${warning1}\n========================================================================\n`;
 
   if (is_residential) {
-    body += `\n========================================================================
-IF THIS SWORN STATEMENT IS IN REGARD TO A RESIDENTIAL STRUCTURE, ON RECEIPT
-OF THE SWORN STATEMENT, THE OWNER OR LESSEE, OR THE OWNER'S OR LESSEE'S
-DESIGNEE SHALL GIVE NOTICE OF ITS RECEIPT TO EACH SUBCONTRACTOR, SUPPLIER,
-AND LABORER WHO HAS PROVIDED A NOTICE OF FURNISHING. IF A SUBCONTRACTOR,
-SUPPLIER, OR LABORER WHO IS ENTITLED TO NOTICE OF RECEIPT OF THE SWORN
-STATEMENT MAKES A REQUEST, THE OWNER, LESSEE, OR DESIGNEE SHALL PROVIDE THE
-REQUESTER A COPY OF THE SWORN STATEMENT WITHIN 10 BUSINESS DAYS AFTER
-RECEIVING THE REQUEST.
-========================================================================
-`;
+    const warning2 = wrapWarning(
+      "IF THIS SWORN STATEMENT IS IN REGARD TO A RESIDENTIAL STRUCTURE, ON RECEIPT OF THE SWORN STATEMENT, THE OWNER OR LESSEE, OR THE OWNER'S OR LESSEE'S DESIGNEE SHALL GIVE NOTICE OF ITS RECEIPT TO EACH SUBCONTRACTOR, SUPPLIER, AND LABORER WHO HAS PROVIDED A NOTICE OF FURNISHING. IF A SUBCONTRACTOR, SUPPLIER, OR LABORER WHO IS ENTITLED TO NOTICE OF RECEIPT OF THE SWORN STATEMENT MAKES A REQUEST, THE OWNER, LESSEE, OR DESIGNEE SHALL PROVIDE THE REQUESTER A COPY OF THE SWORN STATEMENT WITHIN 10 BUSINESS DAYS AFTER RECEIVING THE REQUEST."
+    );
+    body += `\n========================================================================\n${warning2}\n========================================================================\n`;
   }
 
-  body += `\n========================================================================
-WARNING TO DEPONENT: A PERSON WHO GIVES A FALSE SWORN STATEMENT WITH INTENT
-TO DEFRAUD IS SUBJECT TO CRIMINAL PENALTIES AS PROVIDED IN SECTION 110 OF
-THE CONSTRUCTION LIEN ACT, 1980 PA 497, MCL 570.1110.
-========================================================================
-
+  const warning3 = wrapWarning(
+    "WARNING TO DEPONENT: A PERSON WHO GIVES A FALSE SWORN STATEMENT WITH INTENT TO DEFRAUD IS SUBJECT TO CRIMINAL PENALTIES AS PROVIDED IN SECTION 110 OF THE CONSTRUCTION LIEN ACT, 1980 PA 497, MCL 570.1110."
+  );
+  body += `\n========================================================================\n${warning3}\n========================================================================\n
 Deponent: _________________________________
-          ${deponent_name}
-          ${deponent_role}, ${contractor_name}
+          ${safeDeponent}
+          ${safeRole}, ${safeContractor}
 
 Subscribed and sworn to before me on ${fmtDate(statement_date)}.
 
@@ -5243,9 +5268,9 @@ function LogPaymentModal({ isOpen, invoice, job, settings, onClose, onSaved }) {
           invoice_id: invoice.id,
           payment_id: payment.id,
           waiver_type: suggestedWaiverType,
-          property_address: job?.address || "",
+          property_address: job?.address || client?.address || "",
           property_county: "Muskegon",
-          owner_name: job?.client_name || "",
+          owner_name: job?.client_name || client?.name || "",
           contractor_name: settings?.companyName || "Northshore Mechanical & Construction LLC",
           payment_amount: amt,
           payment_through_date: paymentDate,
@@ -5420,7 +5445,7 @@ function LienWaiverModal({ isOpen, existingWaiver, job, client, settings, invoic
         client_id: client?.id || null,
         invoice_id: linkedInvoiceId || null,
         waiver_type: waiverType,
-        property_address: job?.address || "",
+        property_address: job?.address || client?.address || "",
         property_county: "Muskegon",
         owner_name: job?.client_name || client?.name || "",
         contractor_name: settings?.companyName || "Northshore Mechanical & Construction LLC",
@@ -5559,11 +5584,18 @@ function LienWaiverModal({ isOpen, existingWaiver, job, client, settings, invoic
                 </div>
               )}
 
-              <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3 text-[10px] text-slate-500 space-y-0.5">
-                <p>Property: <span className="text-slate-300">{job?.address || "—"}</span></p>
-                <p>Owner: <span className="text-slate-300">{job?.client_name || client?.name || "—"}</span></p>
-                <p>Contractor: <span className="text-slate-300">{settings?.companyName || "Northshore"}</span></p>
+              <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3 text-[10px] space-y-0.5">
+                <p className="text-slate-500">Property: <span className={(job?.address || client?.address) ? "text-slate-300" : "text-rose-400 font-mono"}>{job?.address || client?.address || "[ADDRESS REQUIRED]"}</span></p>
+                <p className="text-slate-500">Owner: <span className={(job?.client_name || client?.name) ? "text-slate-300" : "text-rose-400 font-mono"}>{job?.client_name || client?.name || "[OWNER NAME REQUIRED]"}</span></p>
+                <p className="text-slate-500">Contractor: <span className="text-slate-300">{settings?.companyName || "Northshore Mechanical & Construction LLC"}</span></p>
               </div>
+
+              {(!(job?.address || client?.address) || !(job?.client_name || client?.name)) && (
+                <div className="px-3 py-2 rounded-lg bg-rose-900/20 border border-rose-800/50 text-xs text-rose-300 flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>Critical data missing on this job. Update the Job (and/or Client) record before delivering the waiver, or the document will render with placeholder brackets where address/owner should be.</span>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-2 justify-end mt-5">
@@ -5653,6 +5685,16 @@ function SwornStatementModal({ isOpen, existingStatement, job, client, settings,
   }), { contract: 0, paid: 0, due: 0 });
 
   const handleSave = async () => {
+    // v1.0.1 — validation guards
+    if (notarizedAt && notaryCommission && new Date(notaryCommission) <= new Date(notarizedAt)) {
+      toast.error("Notary commission expires on or before the notarization date — pick a different notary.");
+      return;
+    }
+    if (notarizedAt && notaryName.trim() && !notaryName.trim().includes(" ")) {
+      toast.error("Notary name needs first AND last name (e.g. \"Wendy Smith\").");
+      return;
+    }
+
     setSaving(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -5661,7 +5703,7 @@ function SwornStatementModal({ isOpen, existingStatement, job, client, settings,
         client_id: client?.id || null,
         statement_number: statementNumber,
         statement_date: statementDate,
-        property_address: job?.address || "",
+        property_address: job?.address || client?.address || "",
         property_county: "Muskegon",
         is_residential: true,
         deponent_name: settings?.ownerName || "Connor Garza",
@@ -5847,6 +5889,14 @@ function SwornStatementModal({ isOpen, existingStatement, job, client, settings,
                 </div>
               </div>
             </div>
+
+            {/* v1.0.1 — surface missing critical data BEFORE generation */}
+            {(!job?.address && !client?.address) && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-rose-900/20 border border-rose-800/50 text-xs text-rose-300 flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>Property address is missing on this job. Document will render <span className="font-mono">[PROPERTY ADDRESS REQUIRED]</span> until you update the job. Update the Job's address before delivering this statement.</span>
+              </div>
+            )}
 
             <div className="flex gap-2 justify-end">
               <button onClick={onClose} disabled={saving}
