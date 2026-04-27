@@ -22,7 +22,9 @@ import {
   ShieldCheck, BookOpen,
   // Misc
   ExternalLink, Eye, EyeOff, ArrowRight, ArrowLeft, RefreshCw, MoreHorizontal,
-  CloudSun, Thermometer, MapPin, Phone, Mail, Building2
+  CloudSun, Thermometer, MapPin, Phone, Mail, Building2,
+  // v1.1 Pipeline additions
+  GitBranch, Trophy, GripVertical, MessageSquare, UserPlus, Flame, Target
 } from "lucide-react";
 import { supabase } from "./supabase";
 
@@ -72,6 +74,20 @@ import { supabase } from "./supabase";
 //   - Computed labor cost per job (settings.laborRate × actual hours)
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
+// ================================================================
+// NORTHSHORE OS v1.1.0 — Apr 27 2026 — Lead Pipeline (Kanban)
+// - New: top-level "Pipeline" tab between Estimator and Jobs
+// - New: 5-stage Kanban (New / Contacted / Site Visit / Estimate Sent / Won-Lost)
+// - New: leads table + RLS + auto last_touch_at trigger
+// - New: drag-drop between columns (HTML5 native, no extra deps)
+// - New: AddLeadModal — quick capture with source dropdown
+// - New: LeadDetailDrawer — slide-over (right) for full edit
+// - New: Convert-to-Client+Job on drag to Won column
+// - New: Soft delete to Lost column with optional reason
+// - New: Days-since-touch badge per card (sets up v1.2 last-touch everywhere)
+// - Aesthetic: layered surfaces, amber glow on stage headers,
+//              tabular-nums for $, restrained hover scale
+// - SQL: leads table required (see v1.1-pipeline-migration.sql)
 // ================================================================
 // NORTHSHORE OS v1.0.2 — Apr 27 2026 — Smoke test follow-ups
 // - Fix: notary name validation now fires whenever a name is typed
@@ -7176,6 +7192,1154 @@ function ClientQuickAddModal({ isOpen, onClose, onClientAdded }) {
 }
 
 // ================================================================
+// PIPELINE (v1.1) — Lead Kanban board
+// 5-stage drag-drop funnel: New → Contacted → Site Visit → Estimate Sent → Won/Lost
+// ================================================================
+const PIPELINE_STAGES = [
+  { id: "new",            label: "New",           accent: "from-slate-500/20 to-slate-500/5",   border: "border-slate-500/30",  glow: "shadow-slate-500/10",  icon: Plus       },
+  { id: "contacted",      label: "Contacted",     accent: "from-blue-500/20 to-blue-500/5",     border: "border-blue-500/30",   glow: "shadow-blue-500/10",   icon: MessageSquare },
+  { id: "site_visit",     label: "Site Visit",    accent: "from-amber-500/20 to-amber-500/5",   border: "border-amber-500/30",  glow: "shadow-amber-500/10",  icon: MapPin     },
+  { id: "estimate_sent",  label: "Estimate Sent", accent: "from-purple-500/20 to-purple-500/5", border: "border-purple-500/30", glow: "shadow-purple-500/10", icon: FileText   },
+  { id: "won",            label: "Won",           accent: "from-emerald-500/20 to-emerald-500/5", border: "border-emerald-500/30", glow: "shadow-emerald-500/10", icon: Trophy   },
+];
+
+const LEAD_SOURCES = [
+  "Referral",
+  "Website",
+  "Google",
+  "Facebook",
+  "Instagram",
+  "Drive-by",
+  "Past Client",
+  "Cold Outreach",
+  "Other",
+];
+
+function daysSinceTouch(ts) {
+  if (!ts) return null;
+  const ms = Date.now() - new Date(ts).getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
+function touchBadgeColor(days) {
+  if (days == null) return "bg-slate-700/60 text-slate-300";
+  if (days <= 1)  return "bg-emerald-900/40 text-emerald-300 border border-emerald-500/30";
+  if (days <= 3)  return "bg-blue-900/40 text-blue-300 border border-blue-500/30";
+  if (days <= 7)  return "bg-amber-900/40 text-amber-300 border border-amber-500/30";
+  return "bg-rose-900/40 text-rose-300 border border-rose-500/30";
+}
+
+function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimates, setTab }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [drawerLead, setDrawerLead] = useState(null);
+  const [showLost, setShowLost] = useState(false);
+  const [draggingId, setDraggingId] = useState(null);
+  const [hoverColumn, setHoverColumn] = useState(null);
+
+  // Conversion modal state — fires when a lead is dropped on Won
+  const [convertingLead, setConvertingLead] = useState(null);
+  // Lost reason modal — fires when a card is dropped on Lost
+  const [losingLead, setLosingLead] = useState(null);
+
+  const activeLeads = leads.filter((l) => !l.archived_at && l.stage !== "lost");
+  const lostLeads   = leads.filter((l) => l.stage === "lost" && !l.archived_at);
+
+  const grouped = PIPELINE_STAGES.reduce((acc, s) => {
+    acc[s.id] = activeLeads.filter((l) => l.stage === s.id);
+    return acc;
+  }, {});
+
+  // Funnel stats
+  const totalActive = activeLeads.length;
+  const totalValue = activeLeads.reduce((sum, l) => sum + (Number(l.est_value) || 0), 0);
+  const wonThisMonth = leads.filter((l) => {
+    if (l.stage !== "won" || !l.won_at) return false;
+    const w = new Date(l.won_at);
+    const now = new Date();
+    return w.getMonth() === now.getMonth() && w.getFullYear() === now.getFullYear();
+  }).length;
+
+  // ============================================================
+  // Drag handlers (HTML5 native, no extra deps)
+  // ============================================================
+  const onDragStart = (e, lead) => {
+    setDraggingId(lead.id);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", lead.id);
+  };
+  const onDragEnd = () => {
+    setDraggingId(null);
+    setHoverColumn(null);
+  };
+  const onDragOverCol = (e, stageId) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (hoverColumn !== stageId) setHoverColumn(stageId);
+  };
+  const onDropCol = async (e, stageId) => {
+    e.preventDefault();
+    const leadId = e.dataTransfer.getData("text/plain");
+    setHoverColumn(null);
+    setDraggingId(null);
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    if (lead.stage === stageId) return;
+
+    // Special handling: dragging to Won fires conversion modal
+    if (stageId === "won") {
+      setConvertingLead(lead);
+      return;
+    }
+    await updateLeadStage(lead, stageId);
+  };
+
+  const updateLeadStage = async (lead, newStage) => {
+    const optimistic = { ...lead, stage: newStage, last_touch_at: new Date().toISOString() };
+    setLeads((arr) => arr.map((l) => (l.id === lead.id ? optimistic : l)));
+
+    const { error } = await supabase
+      .from("leads")
+      .update({ stage: newStage, last_touch_at: new Date().toISOString() })
+      .eq("id", lead.id);
+    if (error) {
+      toast.error("Failed to update lead stage");
+      setLeads((arr) => arr.map((l) => (l.id === lead.id ? lead : l)));
+      return;
+    }
+    toast.success(`Moved ${lead.name} → ${PIPELINE_STAGES.find((s) => s.id === newStage)?.label || newStage}`);
+  };
+
+  // Drop on Lost zone (separate target)
+  const onDropLost = async (e) => {
+    e.preventDefault();
+    const leadId = e.dataTransfer.getData("text/plain");
+    setHoverColumn(null);
+    setDraggingId(null);
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    if (lead.stage === "lost") return;
+    setLosingLead(lead);
+  };
+
+  // ============================================================
+  // Lead actions
+  // ============================================================
+  const handleAddLead = async (payload) => {
+    const { data, error } = await supabase
+      .from("leads")
+      .insert({ ...payload, stage: "new" })
+      .select()
+      .single();
+    if (error) {
+      toast.error("Failed to add lead");
+      return;
+    }
+    setLeads((arr) => [data, ...arr]);
+    toast.success(`Added lead: ${data.name}`);
+    setShowAddModal(false);
+  };
+
+  const handleUpdateLead = async (leadId, patch) => {
+    const optimistic = { ...patch, last_touch_at: new Date().toISOString() };
+    setLeads((arr) => arr.map((l) => (l.id === leadId ? { ...l, ...optimistic } : l)));
+    const { error } = await supabase.from("leads").update(optimistic).eq("id", leadId);
+    if (error) {
+      toast.error("Failed to update lead");
+    }
+  };
+
+  const handleArchiveLead = async (leadId) => {
+    const ok = await confirm({
+      title: "Archive this lead?",
+      message: "You can restore it later from Lost / Archive view.",
+      confirmText: "Archive",
+      destructive: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase
+      .from("leads")
+      .update({ archived_at: new Date().toISOString() })
+      .eq("id", leadId);
+    if (error) {
+      toast.error("Failed to archive");
+      return;
+    }
+    setLeads((arr) => arr.filter((l) => l.id !== leadId));
+    setDrawerLead(null);
+    toast.success("Lead archived");
+  };
+
+  // ============================================================
+  // Convert lead → client + job (drop-on-Won flow)
+  // ============================================================
+  const handleConvertWon = async (lead, alsoCreateJob, jobName) => {
+    // 1. Create client (or skip if email/phone already matches)
+    let clientId = null;
+    const existingMatch = clients.find(
+      (c) =>
+        (lead.email && c.email && c.email.toLowerCase() === lead.email.toLowerCase()) ||
+        (lead.phone && c.phone && c.phone === lead.phone)
+    );
+    if (existingMatch) {
+      clientId = existingMatch.id;
+    } else {
+      const { data: newClient, error: cErr } = await supabase
+        .from("clients")
+        .insert({
+          name: lead.name,
+          email: lead.email,
+          phone: lead.phone,
+          address: lead.address,
+        })
+        .select()
+        .single();
+      if (cErr) {
+        toast.error("Failed to create client");
+        return;
+      }
+      clientId = newClient.id;
+      setClients((arr) => [...arr, newClient]);
+    }
+
+    // 2. Optionally create job
+    let jobId = null;
+    if (alsoCreateJob) {
+      const { data: newJob, error: jErr } = await supabase
+        .from("jobs")
+        .insert({
+          name: jobName || lead.scope || `${lead.name} project`,
+          client_id: clientId,
+          address: lead.address,
+          status: "Active",
+        })
+        .select()
+        .single();
+      if (jErr) {
+        toast.error("Failed to create job");
+        return;
+      }
+      jobId = newJob.id;
+      setJobs((arr) => [newJob, ...arr]);
+    }
+
+    // 3. Mark lead as Won
+    const wonAt = new Date().toISOString();
+    const { error: lErr } = await supabase
+      .from("leads")
+      .update({
+        stage: "won",
+        won_at: wonAt,
+        won_client_id: clientId,
+        won_job_id: jobId,
+        last_touch_at: wonAt,
+      })
+      .eq("id", lead.id);
+    if (lErr) {
+      toast.error("Failed to mark lead as won (but client/job were created)");
+      return;
+    }
+    setLeads((arr) =>
+      arr.map((l) =>
+        l.id === lead.id
+          ? { ...l, stage: "won", won_at: wonAt, won_client_id: clientId, won_job_id: jobId, last_touch_at: wonAt }
+          : l
+      )
+    );
+
+    toast.success(
+      alsoCreateJob
+        ? `${lead.name} converted to client + job 🎉`
+        : `${lead.name} converted to client`
+    );
+    setConvertingLead(null);
+  };
+
+  // ============================================================
+  // Mark Lost
+  // ============================================================
+  const handleMarkLost = async (lead, reason) => {
+    const { error } = await supabase
+      .from("leads")
+      .update({
+        stage: "lost",
+        lost_reason: reason || null,
+        last_touch_at: new Date().toISOString(),
+      })
+      .eq("id", lead.id);
+    if (error) {
+      toast.error("Failed to mark as lost");
+      return;
+    }
+    setLeads((arr) =>
+      arr.map((l) =>
+        l.id === lead.id
+          ? { ...l, stage: "lost", lost_reason: reason || null, last_touch_at: new Date().toISOString() }
+          : l
+      )
+    );
+    toast.success(`Marked ${lead.name} as lost`);
+    setLosingLead(null);
+  };
+
+  // ============================================================
+  // RENDER
+  // ============================================================
+  return (
+    <div className="space-y-5">
+      {/* Header row */}
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+          <h2 className="text-3xl font-semibold tracking-tight text-white flex items-center gap-2">
+            <GitBranch className="w-7 h-7 text-amber-400" />
+            Pipeline
+          </h2>
+          <p className="text-slate-400 text-sm mt-1">
+            Drag a lead between stages to move them through the funnel.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn
+            onClick={() => setShowLost((v) => !v)}
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm"
+          >
+            <Archive className="w-4 h-4 mr-1.5" />
+            {showLost ? "Hide" : "Show"} Lost ({lostLeads.length})
+          </Btn>
+          <Btn
+            onClick={() => setShowAddModal(true)}
+            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20"
+          >
+            <UserPlus className="w-4 h-4 mr-1.5" />
+            Add Lead
+          </Btn>
+        </div>
+      </div>
+
+      {/* Funnel stats strip */}
+      <div className="grid grid-cols-3 gap-3">
+        <Card className="bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800">
+          <CardContent className="p-4">
+            <div className="text-xs uppercase tracking-wide text-slate-400 mb-1">Active Leads</div>
+            <div className="text-2xl font-semibold text-white tabular-nums">{totalActive}</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-gradient-to-br from-amber-950/40 to-slate-900/60 border border-amber-900/40">
+          <CardContent className="p-4">
+            <div className="text-xs uppercase tracking-wide text-amber-300/80 mb-1">Pipeline Value</div>
+            <div className="text-2xl font-semibold text-amber-100 tabular-nums">
+              ${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-gradient-to-br from-emerald-950/40 to-slate-900/60 border border-emerald-900/40">
+          <CardContent className="p-4">
+            <div className="text-xs uppercase tracking-wide text-emerald-300/80 mb-1">Won This Month</div>
+            <div className="text-2xl font-semibold text-emerald-100 tabular-nums">{wonThisMonth}</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Empty state */}
+      {totalActive === 0 && lostLeads.length === 0 && (
+        <Card className="bg-slate-900/40 border border-dashed border-slate-700">
+          <CardContent className="p-10 text-center">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-amber-500/10 border border-amber-500/30 mb-4">
+              <Target className="w-7 h-7 text-amber-400" />
+            </div>
+            <div className="text-xl font-semibold text-white mb-1">Your funnel is empty</div>
+            <div className="text-slate-400 text-sm mb-5 max-w-md mx-auto">
+              Every paid job started as a lead. Add the first one — even a "maybe" — and start tracking who's moving forward and who's going cold.
+            </div>
+            <Btn
+              onClick={() => setShowAddModal(true)}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/30"
+            >
+              <UserPlus className="w-4 h-4 mr-1.5" />
+              Add your first lead
+            </Btn>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Kanban board */}
+      {totalActive > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 overflow-x-auto pb-4">
+          {PIPELINE_STAGES.map((stage) => {
+            const cards = grouped[stage.id] || [];
+            const isHover = hoverColumn === stage.id;
+            return (
+              <div
+                key={stage.id}
+                onDragOver={(e) => onDragOverCol(e, stage.id)}
+                onDrop={(e) => onDropCol(e, stage.id)}
+                onDragLeave={() => hoverColumn === stage.id && setHoverColumn(null)}
+                className={`rounded-2xl border ${stage.border} bg-gradient-to-b ${stage.accent} transition-all duration-150 ${
+                  isHover ? `ring-2 ring-amber-400/60 shadow-2xl ${stage.glow}` : `shadow-lg ${stage.glow}`
+                } min-h-[400px] flex flex-col`}
+              >
+                {/* Column header */}
+                <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <stage.icon className="w-4 h-4 text-white/70" />
+                    <span className="font-semibold text-white text-sm">{stage.label}</span>
+                  </div>
+                  <span className="text-xs text-white/50 tabular-nums px-1.5 py-0.5 rounded-md bg-white/5">
+                    {cards.length}
+                  </span>
+                </div>
+
+                {/* Cards */}
+                <div className="flex-1 px-2 py-2 space-y-2 overflow-y-auto">
+                  {cards.length === 0 && (
+                    <div className="text-xs text-white/30 text-center py-6 italic">
+                      Drop here
+                    </div>
+                  )}
+                  {cards.map((lead) => (
+                    <LeadCard
+                      key={lead.id}
+                      lead={lead}
+                      onClick={() => setDrawerLead(lead)}
+                      onDragStart={(e) => onDragStart(e, lead)}
+                      onDragEnd={onDragEnd}
+                      isDragging={draggingId === lead.id}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Lost drop-zone (only shown while dragging or when showLost is on) */}
+      {(draggingId || showLost) && (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setHoverColumn("lost");
+          }}
+          onDrop={onDropLost}
+          onDragLeave={() => setHoverColumn(null)}
+          className={`rounded-2xl border-2 border-dashed transition-all duration-150 ${
+            hoverColumn === "lost"
+              ? "border-rose-400 bg-rose-950/30"
+              : "border-rose-900/60 bg-rose-950/10"
+          } p-5`}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <XCircle className="w-4 h-4 text-rose-400" />
+              <span className="font-semibold text-rose-300 text-sm">
+                Lost ({lostLeads.length})
+              </span>
+              <span className="text-xs text-rose-400/60">
+                — drop here to mark a lead as lost
+              </span>
+            </div>
+          </div>
+          {showLost && lostLeads.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
+              {lostLeads.map((lead) => (
+                <LeadCard
+                  key={lead.id}
+                  lead={lead}
+                  onClick={() => setDrawerLead(lead)}
+                  onDragStart={() => {}}
+                  onDragEnd={() => {}}
+                  isDragging={false}
+                  isLost
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modals + drawers */}
+      {showAddModal && (
+        <AddLeadModal
+          onClose={() => setShowAddModal(false)}
+          onAdd={handleAddLead}
+        />
+      )}
+      {drawerLead && (
+        <LeadDetailDrawer
+          lead={drawerLead}
+          clients={clients}
+          jobs={jobs}
+          estimates={estimates}
+          onClose={() => setDrawerLead(null)}
+          onUpdate={(patch) => handleUpdateLead(drawerLead.id, patch)}
+          onArchive={() => handleArchiveLead(drawerLead.id)}
+          onJumpToJob={(jobId) => {
+            setDrawerLead(null);
+            setTab("Jobs");
+          }}
+        />
+      )}
+      {convertingLead && (
+        <ConvertLeadModal
+          lead={convertingLead}
+          onClose={() => setConvertingLead(null)}
+          onConvert={handleConvertWon}
+        />
+      )}
+      {losingLead && (
+        <MarkLostModal
+          lead={losingLead}
+          onClose={() => setLosingLead(null)}
+          onMarkLost={handleMarkLost}
+        />
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------
+// Lead Card — single Kanban card
+// ----------------------------------------------------------------
+function LeadCard({ lead, onClick, onDragStart, onDragEnd, isDragging, isLost }) {
+  const days = daysSinceTouch(lead.last_touch_at);
+  const valueStr =
+    lead.est_value && Number(lead.est_value) > 0
+      ? `$${Number(lead.est_value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+      : null;
+  const isStale = days != null && days > 7 && !isLost;
+
+  return (
+    <motion.div
+      layout
+      draggable={!isLost}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onClick={onClick}
+      whileHover={{ scale: 1.015, y: -1 }}
+      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+      className={`group cursor-pointer rounded-xl border transition-all ${
+        isDragging
+          ? "opacity-40 border-amber-400 shadow-2xl shadow-amber-500/30 rotate-1"
+          : isLost
+          ? "border-rose-900/40 bg-slate-900/60 hover:border-rose-700/60"
+          : "border-slate-700/60 bg-slate-900/80 hover:border-amber-500/40 hover:shadow-lg hover:shadow-amber-500/5"
+      } p-3`}
+    >
+      {/* Top row: name + drag handle */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-white text-sm truncate">{lead.name}</div>
+          {lead.scope && (
+            <div className="text-xs text-slate-400 truncate mt-0.5">{lead.scope}</div>
+          )}
+        </div>
+        {!isLost && (
+          <GripVertical className="w-3.5 h-3.5 text-slate-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+        )}
+      </div>
+
+      {/* Source pill */}
+      {lead.source && (
+        <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">
+          {lead.source}
+        </div>
+      )}
+
+      {/* Bottom row: value + age */}
+      <div className="flex items-center justify-between gap-2">
+        {valueStr ? (
+          <span className="text-sm font-semibold text-amber-300 tabular-nums">{valueStr}</span>
+        ) : (
+          <span className="text-xs text-slate-600 italic">No value</span>
+        )}
+        {days != null && (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-md tabular-nums font-medium ${touchBadgeColor(days)}`}>
+            {days === 0 ? "today" : days === 1 ? "1d" : `${days}d`}
+          </span>
+        )}
+      </div>
+
+      {/* Stale flame indicator */}
+      {isStale && (
+        <div className="mt-2 pt-2 border-t border-slate-800 flex items-center gap-1.5">
+          <Flame className="w-3 h-3 text-rose-400" />
+          <span className="text-[10px] text-rose-300/80 italic">Going cold — follow up</span>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ----------------------------------------------------------------
+// Add Lead Modal — quick capture
+// ----------------------------------------------------------------
+function AddLeadModal({ onClose, onAdd }) {
+  const [name, setName]   = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [source, setSource] = useState("Referral");
+  const [estValue, setEstValue] = useState("");
+  const [scope, setScope] = useState("");
+  const [address, setAddress] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const canSave = name.trim().length > 0;
+
+  const submit = async () => {
+    if (!canSave || saving) return;
+    setSaving(true);
+    await onAdd({
+      name: name.trim(),
+      phone: phone.trim() || null,
+      email: email.trim() || null,
+      source,
+      est_value: estValue ? Number(estValue) : 0,
+      scope: scope.trim() || null,
+      address: address.trim() || null,
+      notes: notes.trim() || null,
+    });
+    setSaving(false);
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.95, opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <UserPlus className="w-5 h-5 text-amber-400" />
+              <h3 className="text-lg font-semibold text-white">Add Lead</h3>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-slate-500 hover:text-white transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-3">
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Name *
+              </label>
+              <Inp
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Homeowner name or company"
+                autoFocus
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                  Phone
+                </label>
+                <Inp
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="(231) 555-0100"
+                  type="tel"
+                />
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                  Email
+                </label>
+                <Inp
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@example.com"
+                  type="email"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Source
+              </label>
+              <Sel value={source} onChange={(e) => setSource(e.target.value)}>
+                {LEAD_SOURCES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </Sel>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Property address
+              </label>
+              <Inp
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="Street, City"
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Scope (short)
+              </label>
+              <Inp
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+                placeholder="2-car detached garage, 24x24"
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Estimated value
+              </label>
+              <Inp
+                value={estValue}
+                onChange={(e) => setEstValue(e.target.value.replace(/[^0-9.]/g, ""))}
+                placeholder="50000"
+                type="text"
+                inputMode="decimal"
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Notes
+              </label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="How did they find us, what they said, any concerns..."
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/30 transition-colors resize-none"
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
+            <Btn
+              onClick={onClose}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+            >
+              Cancel
+            </Btn>
+            <Btn
+              onClick={submit}
+              disabled={!canSave || saving}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? <Spinner /> : <><Save className="w-4 h-4 mr-1.5" />Add Lead</>}
+            </Btn>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ----------------------------------------------------------------
+// Lead Detail Drawer — slide-over (right)
+// ----------------------------------------------------------------
+function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, onArchive, onJumpToJob }) {
+  const [name, setName]     = useState(lead.name || "");
+  const [phone, setPhone]   = useState(lead.phone || "");
+  const [email, setEmail]   = useState(lead.email || "");
+  const [source, setSource] = useState(lead.source || "Referral");
+  const [estValue, setEstValue] = useState(String(lead.est_value || ""));
+  const [scope, setScope]   = useState(lead.scope || "");
+  const [address, setAddress] = useState(lead.address || "");
+  const [notes, setNotes]   = useState(lead.notes || "");
+  const [dirty, setDirty]   = useState(false);
+
+  useEffect(() => {
+    setName(lead.name || "");
+    setPhone(lead.phone || "");
+    setEmail(lead.email || "");
+    setSource(lead.source || "Referral");
+    setEstValue(String(lead.est_value || ""));
+    setScope(lead.scope || "");
+    setAddress(lead.address || "");
+    setNotes(lead.notes || "");
+    setDirty(false);
+  }, [lead.id]);
+
+  const markDirty = () => setDirty(true);
+
+  const handleSave = async () => {
+    await onUpdate({
+      name: name.trim(),
+      phone: phone.trim() || null,
+      email: email.trim() || null,
+      source,
+      est_value: estValue ? Number(estValue) : 0,
+      scope: scope.trim() || null,
+      address: address.trim() || null,
+      notes: notes.trim() || null,
+    });
+    setDirty(false);
+  };
+
+  // Convert linked records (if Won)
+  const linkedJob = lead.won_job_id ? jobs.find((j) => j.id === lead.won_job_id) : null;
+  const linkedClient = lead.won_client_id ? clients.find((c) => c.id === lead.won_client_id) : null;
+  const stage = PIPELINE_STAGES.find((s) => s.id === lead.stage);
+  const isLost = lead.stage === "lost";
+
+  const days = daysSinceTouch(lead.last_touch_at);
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ x: "100%" }}
+          animate={{ x: 0 }}
+          exit={{ x: "100%" }}
+          transition={{ type: "spring", stiffness: 320, damping: 32 }}
+          className="absolute right-0 top-0 bottom-0 w-full max-w-md bg-slate-900 border-l border-slate-800 shadow-2xl overflow-y-auto"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-5 py-4 flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                {isLost ? (
+                  <Badge label="Lost" color="rose" />
+                ) : (
+                  <Badge label={stage?.label || lead.stage} color="amber" />
+                )}
+                {days != null && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md tabular-nums font-medium ${touchBadgeColor(days)}`}>
+                    {days === 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`}
+                  </span>
+                )}
+              </div>
+              <h3 className="text-xl font-semibold text-white truncate">{lead.name}</h3>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-slate-500 hover:text-white transition-colors flex-shrink-0"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="p-5 space-y-4">
+            {/* Won-state banner */}
+            {(linkedClient || linkedJob) && (
+              <Card className="bg-emerald-950/40 border border-emerald-900/40">
+                <CardContent className="p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Trophy className="w-4 h-4 text-emerald-400" />
+                    <span className="text-sm font-semibold text-emerald-200">Converted</span>
+                  </div>
+                  {linkedClient && (
+                    <div className="text-xs text-emerald-300/80 mb-1">
+                      Client: {linkedClient.name}
+                    </div>
+                  )}
+                  {linkedJob && (
+                    <button
+                      onClick={() => onJumpToJob(linkedJob.id)}
+                      className="text-xs text-emerald-200 underline hover:text-emerald-100 flex items-center gap-1"
+                    >
+                      Open job: {linkedJob.name}
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Lost reason banner */}
+            {isLost && lead.lost_reason && (
+              <Card className="bg-rose-950/30 border border-rose-900/40">
+                <CardContent className="p-3">
+                  <div className="text-xs uppercase tracking-wide text-rose-400 mb-1">Lost reason</div>
+                  <div className="text-sm text-rose-100">{lead.lost_reason}</div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Editable fields */}
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Name</label>
+              <Inp value={name} onChange={(e) => { setName(e.target.value); markDirty(); }} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Phone</label>
+                <Inp value={phone} onChange={(e) => { setPhone(e.target.value); markDirty(); }} type="tel" />
+                {phone && (
+                  <a
+                    href={`tel:${phone.replace(/[^0-9+]/g, "")}`}
+                    className="text-xs text-amber-400 hover:text-amber-300 mt-1 inline-flex items-center gap-1"
+                  >
+                    <Phone className="w-3 h-3" /> Call
+                  </a>
+                )}
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Email</label>
+                <Inp value={email} onChange={(e) => { setEmail(e.target.value); markDirty(); }} type="email" />
+                {email && (
+                  <a
+                    href={`mailto:${email}`}
+                    className="text-xs text-amber-400 hover:text-amber-300 mt-1 inline-flex items-center gap-1"
+                  >
+                    <Mail className="w-3 h-3" /> Email
+                  </a>
+                )}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Source</label>
+              <Sel value={source} onChange={(e) => { setSource(e.target.value); markDirty(); }}>
+                {LEAD_SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </Sel>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Property address</label>
+              <Inp value={address} onChange={(e) => { setAddress(e.target.value); markDirty(); }} />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Scope</label>
+              <Inp value={scope} onChange={(e) => { setScope(e.target.value); markDirty(); }} />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Estimated value</label>
+              <Inp
+                value={estValue}
+                onChange={(e) => { setEstValue(e.target.value.replace(/[^0-9.]/g, "")); markDirty(); }}
+                inputMode="decimal"
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Notes</label>
+              <textarea
+                value={notes}
+                onChange={(e) => { setNotes(e.target.value); markDirty(); }}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/30 transition-colors resize-none"
+                rows={4}
+              />
+            </div>
+
+            <div className="text-xs text-slate-500 pt-2 border-t border-slate-800">
+              Created {new Date(lead.created_at).toLocaleDateString()}
+            </div>
+          </div>
+
+          {/* Footer actions */}
+          <div className="sticky bottom-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 px-5 py-4 flex items-center justify-between gap-2">
+            <Btn
+              onClick={onArchive}
+              className="bg-rose-950/40 hover:bg-rose-900/40 text-rose-300 border border-rose-900/60 text-sm"
+            >
+              <Trash2 className="w-4 h-4 mr-1.5" />
+              Archive
+            </Btn>
+            <Btn
+              onClick={handleSave}
+              disabled={!dirty}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Save className="w-4 h-4 mr-1.5" />
+              Save Changes
+            </Btn>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ----------------------------------------------------------------
+// Convert Lead Modal — fires when dropping a lead on Won
+// ----------------------------------------------------------------
+function ConvertLeadModal({ lead, onClose, onConvert }) {
+  const [createJob, setCreateJob] = useState(true);
+  const [jobName, setJobName] = useState(lead.scope || `${lead.name} project`);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    setSaving(true);
+    await onConvert(lead, createJob, jobName);
+    setSaving(false);
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.95, opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="bg-slate-900 border border-emerald-900/40 rounded-2xl shadow-2xl shadow-emerald-500/10 w-full max-w-md"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-5 border-b border-slate-800 flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-emerald-400" />
+            <h3 className="text-lg font-semibold text-white">Convert {lead.name} to Won?</h3>
+          </div>
+
+          <div className="p-5 space-y-3">
+            <p className="text-sm text-slate-300">
+              This will create a Client record. Optionally also create a Job to start tracking the build.
+            </p>
+
+            <label className="flex items-start gap-3 p-3 rounded-lg bg-slate-800/60 border border-slate-700 cursor-pointer hover:border-emerald-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={createJob}
+                onChange={(e) => setCreateJob(e.target.checked)}
+                className="mt-0.5 accent-emerald-500"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-white">Also create a Job</div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  Recommended. You can edit details later.
+                </div>
+              </div>
+            </label>
+
+            {createJob && (
+              <div>
+                <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                  Job name
+                </label>
+                <Inp
+                  value={jobName}
+                  onChange={(e) => setJobName(e.target.value)}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
+            <Btn
+              onClick={onClose}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+            >
+              Cancel
+            </Btn>
+            <Btn
+              onClick={submit}
+              disabled={saving}
+              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold shadow-lg shadow-emerald-500/30 disabled:opacity-50"
+            >
+              {saving ? <Spinner /> : <><Trophy className="w-4 h-4 mr-1.5" />Convert</>}
+            </Btn>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ----------------------------------------------------------------
+// Mark Lost Modal — fires when dropping on Lost zone
+// ----------------------------------------------------------------
+function MarkLostModal({ lead, onClose, onMarkLost }) {
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    setSaving(true);
+    await onMarkLost(lead, reason.trim());
+    setSaving(false);
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.95, opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="bg-slate-900 border border-rose-900/40 rounded-2xl shadow-2xl shadow-rose-500/10 w-full max-w-md"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-5 border-b border-slate-800 flex items-center gap-2">
+            <XCircle className="w-5 h-5 text-rose-400" />
+            <h3 className="text-lg font-semibold text-white">Mark {lead.name} as Lost?</h3>
+          </div>
+
+          <div className="p-5 space-y-3">
+            <p className="text-sm text-slate-300">
+              Capturing why you lost this one helps you spot patterns. Optional.
+            </p>
+            <div>
+              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                Reason (optional)
+              </label>
+              <Sel value={reason} onChange={(e) => setReason(e.target.value)}>
+                <option value="">— Choose or skip —</option>
+                <option value="Price">Price</option>
+                <option value="Timeline">Timeline</option>
+                <option value="Went with another contractor">Went with another contractor</option>
+                <option value="Project cancelled">Project cancelled</option>
+                <option value="No response">No response</option>
+                <option value="Out of service area">Out of service area</option>
+                <option value="Not a real lead">Not a real lead</option>
+                <option value="Other">Other</option>
+              </Sel>
+            </div>
+          </div>
+
+          <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
+            <Btn
+              onClick={onClose}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+            >
+              Cancel
+            </Btn>
+            <Btn
+              onClick={submit}
+              disabled={saving}
+              className="bg-rose-500 hover:bg-rose-400 text-white font-semibold shadow-lg shadow-rose-500/30 disabled:opacity-50"
+            >
+              {saving ? <Spinner /> : <><XCircle className="w-4 h-4 mr-1.5" />Mark Lost</>}
+            </Btn>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
 // ESTIMATOR
 // ================================================================
 function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, setClients, jobs }) {
@@ -10405,6 +11569,7 @@ function Settings({ settings, setSettings }) {
 const TABS = [
   { id: "Dashboard", label: "Dashboard",  icon: LayoutDashboard },
   { id: "Estimator", label: "Estimator",  icon: Calculator },
+  { id: "Pipeline",  label: "Pipeline",   icon: GitBranch },
   { id: "Jobs",      label: "Jobs",       icon: Briefcase },
   { id: "Daily",     label: "Daily Logs", icon: ClipboardList },
   { id: "Schedule",  label: "Schedule",   icon: Calendar },
@@ -10438,6 +11603,7 @@ function AppInner() {
   const [lienWaivers, setLienWaivers] = useState([]);
   const [swornStatements, setSwornStatements] = useState([]);
   const [jobSubs, setJobSubs] = useState([]);
+  const [leads, setLeads] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Settings
@@ -10491,7 +11657,7 @@ function AppInner() {
     }
     let alive = true;
     (async () => {
-      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes, invRes, payRes, waiverRes, stmtRes, subsRes] = await Promise.all([
+      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes, invRes, payRes, waiverRes, stmtRes, subsRes, leadsRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
         supabase.from("clients").select("*").order("name"),
@@ -10514,6 +11680,7 @@ function AppInner() {
         supabase.from("lien_waivers").select("*").order("created_at", { ascending: false }),
         supabase.from("sworn_statements").select("*").order("statement_date", { ascending: false }),
         supabase.from("job_subs").select("*").order("created_at", { ascending: false }),
+        supabase.from("leads").select("*").is("archived_at", null).order("last_touch_at", { ascending: false }),
       ]);
       if (!alive) return;
       setJobs(jobsRes.data || []);
@@ -10532,6 +11699,7 @@ function AppInner() {
       setLienWaivers(waiverRes.data || []);
       setSwornStatements(stmtRes.data || []);
       setJobSubs(subsRes.data || []);
+      setLeads(leadsRes.data || []);
       setDataLoaded(true);
     })();
     return () => { alive = false; };
@@ -10789,6 +11957,18 @@ function AppInner() {
                 clients={clients}
                 setClients={setClients}
                 jobs={jobs}
+              />
+            )}
+            {tab === "Pipeline" && (
+              <Pipeline
+                leads={leads}
+                setLeads={setLeads}
+                clients={clients}
+                setClients={setClients}
+                jobs={jobs}
+                setJobs={setJobs}
+                estimates={estimates}
+                setTab={setTab}
               />
             )}
             {tab === "Jobs" && (
