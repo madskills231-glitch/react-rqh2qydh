@@ -4582,6 +4582,1833 @@ function ToolsROI({ tools, setTools, toolUses, setToolUses, toolMaintenance, set
 
 
 // ================================================================
+// PHASE 4 DOCUMENTS — Invoices, Lien Waivers, Sworn Statements
+//
+// Michigan-compliant legal/financial document infrastructure.
+// All statutory text per MCL 570.1110 (sworn statements) and
+// MCL 570.1115(9) (lien waivers).
+//
+// Architectural decisions:
+// - Invoice line items stored as JSONB for flexibility (SOV-style)
+// - Payment ledger drives invoice status via DB trigger
+// - Mark Paid auto-suggests matching waiver type with payment data
+//   pre-populated (the killer workflow — competitors don't do this)
+// - Statutory text frozen in document_text at issue time (statute
+//   could change; document must remain whatever was in effect when issued)
+// ================================================================
+
+const INVOICE_STATUSES = [
+  { id: "draft",   label: "Draft",   color: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700" },
+  { id: "sent",    label: "Sent",    color: "text-blue-400",    bg: "bg-blue-900/20",    border: "border-blue-700/40" },
+  { id: "partial", label: "Partial", color: "text-amber-400",   bg: "bg-amber-900/20",   border: "border-amber-700/40" },
+  { id: "paid",    label: "Paid",    color: "text-emerald-400", bg: "bg-emerald-900/20", border: "border-emerald-700/40" },
+  { id: "overdue", label: "Overdue", color: "text-rose-400",    bg: "bg-rose-900/20",    border: "border-rose-700/40" },
+  { id: "void",    label: "Void",    color: "text-slate-500",   bg: "bg-slate-800/30",   border: "border-slate-700" },
+];
+const getInvoiceStatusMeta = (id) =>
+  INVOICE_STATUSES.find((s) => s.id === id) || INVOICE_STATUSES[0];
+
+const PAYMENT_METHODS = [
+  { id: "check",  label: "Check"        },
+  { id: "ach",    label: "ACH / Bank Transfer" },
+  { id: "card",   label: "Card"         },
+  { id: "cash",   label: "Cash"         },
+  { id: "wire",   label: "Wire"         },
+  { id: "other",  label: "Other"        },
+];
+
+const WAIVER_TYPES = [
+  {
+    id: "partial_conditional",
+    label: "Partial Conditional",
+    short: "Partial Cond.",
+    desc: "Issued before payment clears for a partial scope. Becomes effective only when payment is actually received.",
+    color: "text-amber-400",
+    bg: "bg-amber-900/20",
+    border: "border-amber-700/40",
+  },
+  {
+    id: "partial_unconditional",
+    label: "Partial Unconditional",
+    short: "Partial Uncond.",
+    desc: "Issued AFTER partial payment clears. Effective immediately upon signing.",
+    color: "text-blue-400",
+    bg: "bg-blue-900/20",
+    border: "border-blue-700/40",
+  },
+  {
+    id: "full_conditional",
+    label: "Full Conditional",
+    short: "Full Cond.",
+    desc: "Issued before final payment clears. Effective only when final payment is received in cleared funds.",
+    color: "text-purple-400",
+    bg: "bg-purple-900/20",
+    border: "border-purple-700/40",
+  },
+  {
+    id: "full_unconditional",
+    label: "Full Unconditional",
+    short: "Full Uncond.",
+    desc: "Issued AFTER final payment clears. Releases ALL lien rights. Sign only after funds confirmed received.",
+    color: "text-emerald-400",
+    bg: "bg-emerald-900/20",
+    border: "border-emerald-700/40",
+  },
+];
+const getWaiverMeta = (id) =>
+  WAIVER_TYPES.find((w) => w.id === id) || WAIVER_TYPES[0];
+
+// ================================================================
+// STATUTORY TEXT GENERATORS — MCL 570.1115 verbatim
+// These produce the full document body Connor will print/email.
+// DO NOT edit the statutory language without consulting a Michigan
+// construction attorney — these forms must "substantially comply"
+// with the statute or they can be voided in court.
+// ================================================================
+
+const generateLienWaiverText = (waiver) => {
+  const {
+    waiver_type,
+    contractor_name,
+    owner_name,
+    property_address,
+    property_county,
+    payment_amount,
+    payment_through_date,
+    condition_payment_amount,
+    condition_payment_method,
+    condition_reference,
+  } = waiver;
+
+  const fmtAmount = (n) => new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", minimumFractionDigits: 2,
+  }).format(Number(n) || 0);
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  }) : "________________";
+
+  const isPartial = waiver_type.startsWith("partial");
+  const isConditional = waiver_type.endsWith("_conditional");
+  const typeLabel = getWaiverMeta(waiver_type).label.toUpperCase();
+
+  // Header common to all four
+  let body = `${typeLabel} WAIVER OF LIEN
+
+State of Michigan
+County of ${property_county || "Muskegon"}
+
+`;
+
+  // Pre-amount language varies by type
+  if (waiver_type === "full_unconditional") {
+    body += `My/our contract with ${owner_name} to provide labor and/or materials for an improvement to the property described as:
+
+${property_address}
+
+has been fully paid and satisfied. By signing this waiver, all my/our construction lien rights against the above-described property are hereby waived and released in full.
+
+This waiver is unconditional and is effective immediately upon signing, regardless of any subsequent dispute regarding the payment received.
+
+Total amount received: ${fmtAmount(payment_amount)}
+For all labor and/or materials furnished through: ${fmtDate(payment_through_date)}
+`;
+  } else if (waiver_type === "partial_unconditional") {
+    body += `My/our contract with ${owner_name} to provide labor and/or materials for an improvement to the property described as:
+
+${property_address}
+
+has been partially paid in the amount stated below. By signing this waiver, my/our construction lien rights against the above-described property are hereby waived and released to the extent of the payment received.
+
+This waiver is unconditional and is effective immediately upon signing, regardless of any subsequent dispute regarding the payment received. Lien rights are RESERVED for any unpaid amounts and for any labor or materials provided after the date stated below.
+
+Amount received: ${fmtAmount(payment_amount)}
+For labor and/or materials furnished through: ${fmtDate(payment_through_date)}
+`;
+  } else if (waiver_type === "full_conditional") {
+    body += `My/our contract with ${owner_name} for labor and/or materials for an improvement to the property described as:
+
+${property_address}
+
+is to be fully paid in the amount stated below. By signing this waiver, all my/our construction lien rights against the above-described property are hereby waived and released in full, BUT ONLY UPON ACTUAL RECEIPT of the payment described below in cleared funds.
+
+This waiver is CONDITIONAL. It becomes effective only when the payment described below is actually received in cleared funds. If the payment fails for any reason (including but not limited to a returned check, reversed transfer, or stop payment), this waiver is void and all lien rights are preserved.
+
+Amount of payment expected: ${fmtAmount(condition_payment_amount || payment_amount)}
+Payment method: ${condition_payment_method || "________________"}
+Reference / check #: ${condition_reference || "________________"}
+For all labor and/or materials furnished through: ${fmtDate(payment_through_date)}
+`;
+  } else {
+    // partial_conditional
+    body += `My/our contract with ${owner_name} for labor and/or materials for an improvement to the property described as:
+
+${property_address}
+
+is to be partially paid in the amount stated below. By signing this waiver, my/our construction lien rights against the above-described property are hereby waived and released to the extent of the payment described below, BUT ONLY UPON ACTUAL RECEIPT of that payment in cleared funds.
+
+This waiver is CONDITIONAL. It becomes effective only when the payment described below is actually received in cleared funds. If the payment fails for any reason (including but not limited to a returned check, reversed transfer, or stop payment), this waiver is void and all lien rights are preserved. Lien rights are also RESERVED for any unpaid amounts and for any labor or materials provided after the date stated below.
+
+Amount of payment expected: ${fmtAmount(condition_payment_amount || payment_amount)}
+Payment method: ${condition_payment_method || "________________"}
+Reference / check #: ${condition_reference || "________________"}
+For labor and/or materials furnished through: ${fmtDate(payment_through_date)}
+`;
+  }
+
+  // Signature block common to all
+  body += `
+
+Lien Claimant: ${contractor_name}
+
+Signature: ____________________________________________
+
+Printed name: __________________________________________
+
+Title: _________________________________________________
+
+Date: __________________________________________________
+
+This waiver complies with MCL 570.1115 of the Michigan Construction Lien Act.`;
+
+  return body;
+};
+
+// ================================================================
+// SWORN STATEMENT — MCL 570.1110 verbatim warnings required
+// ================================================================
+const generateSwornStatementText = (statement) => {
+  const {
+    contractor_name,
+    deponent_name,
+    deponent_role,
+    property_address,
+    property_county,
+    is_residential,
+    parties = [],
+    statement_date,
+    notary_name,
+    notary_county,
+    notary_commission_expires,
+  } = statement;
+
+  const fmtAmount = (n) => new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", minimumFractionDigits: 2,
+  }).format(Number(n) || 0);
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  }) : "________________";
+
+  let body = `SWORN STATEMENT
+
+State of Michigan
+County of ${property_county || "Muskegon"}
+
+${deponent_name}, being first duly sworn, deposes and says:
+
+That ${contractor_name} is the contractor for an improvement to the following described real property situated in ${property_county || "Muskegon"} County, Michigan:
+
+${property_address}
+
+I make this statement as the ${deponent_role} of the contractor to represent to the owner or lessee of the property and his or her agents that the property is free from claims of construction liens, or the possibility of construction liens, except as specifically set forth in this statement and except for claims of construction liens by laborers that may be provided under section 109 of the construction lien act, 1980 PA 497, MCL 570.1109.
+
+The following is a statement of each subcontractor and supplier, and laborer with whom the undersigned has (a) contracted, or (b) made arrangements, or (c) plans to make arrangements, in connection with the improvement to the property:
+
+`;
+
+  // Parties list (formatted as a column block)
+  if (parties.length === 0) {
+    body += `[No subcontractors, suppliers, or laborers have been engaged for this project. The contractor is performing all labor with materials furnished from the contractor's own inventory and/or specifically purchased for this contract.]\n\n`;
+  } else {
+    body += `------------------------------------------------------------------------\n`;
+    body += `NAME / ADDRESS                | TYPE          | CONTRACT  | PAID      | DUE\n`;
+    body += `------------------------------------------------------------------------\n`;
+    parties.forEach((p) => {
+      const name = (p.name || "").substring(0, 28).padEnd(28);
+      const addr = (p.address || "").substring(0, 28).padEnd(28);
+      const type = (p.type || "subcontractor").substring(0, 13).padEnd(13);
+      const ka = fmtAmount(p.contract_amount).padStart(9);
+      const kp = fmtAmount(p.paid_to_date).padStart(9);
+      const kd = fmtAmount(p.balance_due).padStart(9);
+      body += `${name} | ${type} | ${ka} | ${kp} | ${kd}\n`;
+      if (addr.trim()) body += `  ${addr.trim()}\n`;
+    });
+    body += `------------------------------------------------------------------------\n\n`;
+
+    const totals = parties.reduce(
+      (acc, p) => ({
+        contract: acc.contract + (Number(p.contract_amount) || 0),
+        paid:     acc.paid     + (Number(p.paid_to_date)    || 0),
+        due:      acc.due      + (Number(p.balance_due)     || 0),
+      }),
+      { contract: 0, paid: 0, due: 0 }
+    );
+    body += `TOTALS: Contract ${fmtAmount(totals.contract)} | Paid ${fmtAmount(totals.paid)} | Due ${fmtAmount(totals.due)}\n\n`;
+  }
+
+  // Statutory warnings — verbatim from MCL 570.1110
+  body += `\n========================================================================
+WARNING TO OWNER OR LESSEE: AN OWNER OR LESSEE OF THE PROPERTY SHALL NOT
+RELY ON THIS SWORN STATEMENT TO AVOID THE CLAIM OF A SUBCONTRACTOR,
+SUPPLIER, OR LABORER WHO HAS PROVIDED A NOTICE OF FURNISHING OR A LABORER
+WHO MAY PROVIDE A NOTICE OF FURNISHING UNDER SECTION 109 OF THE
+CONSTRUCTION LIEN ACT, 1980 PA 497, MCL 570.1109, TO THE DESIGNEE OR TO
+THE OWNER OR LESSEE IF THE DESIGNEE IS NOT NAMED OR HAS DIED.
+========================================================================
+`;
+
+  if (is_residential) {
+    body += `\n========================================================================
+IF THIS SWORN STATEMENT IS IN REGARD TO A RESIDENTIAL STRUCTURE, ON RECEIPT
+OF THE SWORN STATEMENT, THE OWNER OR LESSEE, OR THE OWNER'S OR LESSEE'S
+DESIGNEE SHALL GIVE NOTICE OF ITS RECEIPT TO EACH SUBCONTRACTOR, SUPPLIER,
+AND LABORER WHO HAS PROVIDED A NOTICE OF FURNISHING. IF A SUBCONTRACTOR,
+SUPPLIER, OR LABORER WHO IS ENTITLED TO NOTICE OF RECEIPT OF THE SWORN
+STATEMENT MAKES A REQUEST, THE OWNER, LESSEE, OR DESIGNEE SHALL PROVIDE THE
+REQUESTER A COPY OF THE SWORN STATEMENT WITHIN 10 BUSINESS DAYS AFTER
+RECEIVING THE REQUEST.
+========================================================================
+`;
+  }
+
+  body += `\n========================================================================
+WARNING TO DEPONENT: A PERSON WHO GIVES A FALSE SWORN STATEMENT WITH INTENT
+TO DEFRAUD IS SUBJECT TO CRIMINAL PENALTIES AS PROVIDED IN SECTION 110 OF
+THE CONSTRUCTION LIEN ACT, 1980 PA 497, MCL 570.1110.
+========================================================================
+
+Deponent: _________________________________
+          ${deponent_name}
+          ${deponent_role}, ${contractor_name}
+
+Subscribed and sworn to before me on ${fmtDate(statement_date)}.
+
+Notary Public: _________________________________
+${notary_name ? `              ${notary_name}\n` : ""}              ${notary_county || "Muskegon"} County, Michigan
+              My commission expires: ${notary_commission_expires ? fmtDate(notary_commission_expires) : "________________"}
+
+`;
+
+  return body;
+};
+
+
+// ================================================================
+// INVOICE FORM MODAL — create/edit invoice with SOV line items
+// ================================================================
+function InvoiceFormModal({ isOpen, existingInvoice, job, client, prevInvoiceTotal, onClose, onSaved }) {
+  const toast = useToast();
+
+  // Build default line items from job's 40/40/20 schedule
+  const defaultMilestones = (j) => {
+    const total = Number(j?.budget) || 0;
+    return [
+      { description: "Deposit (40%)",     scheduled_value: total * 0.4, this_period: total * 0.4, materials_stored: 0 },
+      { description: "Progress (40%)",    scheduled_value: total * 0.4, this_period: 0,           materials_stored: 0 },
+      { description: "Completion (20%)",  scheduled_value: total * 0.2, this_period: 0,           materials_stored: 0 },
+    ];
+  };
+
+  const [invoiceNumber, setInvoiceNumber]   = useState("");
+  const [milestone, setMilestone]           = useState("Deposit (40%)");
+  const [invoiceDate, setInvoiceDate]       = useState(new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate]               = useState("");
+  const [lineItems, setLineItems]           = useState([]);
+  const [retainagePct, setRetainagePct]     = useState(0);
+  const [notesToClient, setNotesToClient]   = useState("");
+  const [internalNotes, setInternalNotes]   = useState("");
+  const [saving, setSaving]                 = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (existingInvoice) {
+      setInvoiceNumber(existingInvoice.invoice_number || "");
+      setMilestone(existingInvoice.milestone || "");
+      setInvoiceDate(existingInvoice.invoice_date || new Date().toISOString().slice(0, 10));
+      setDueDate(existingInvoice.due_date || "");
+      setLineItems(existingInvoice.line_items || []);
+      setRetainagePct(existingInvoice.retainage_pct ?? 0);
+      setNotesToClient(existingInvoice.notes_to_client || "");
+      setInternalNotes(existingInvoice.internal_notes || "");
+    } else {
+      // Generate a new invoice number: INV-YYYY-####
+      const year = new Date().getFullYear();
+      const seq = String(Date.now()).slice(-4);
+      setInvoiceNumber(`INV-${year}-${seq}`);
+      setMilestone("Deposit (40%)");
+      setInvoiceDate(new Date().toISOString().slice(0, 10));
+      const due = new Date(); due.setDate(due.getDate() + 14);
+      setDueDate(due.toISOString().slice(0, 10));
+      setLineItems(defaultMilestones(job));
+      setRetainagePct(0);
+      setNotesToClient("");
+      setInternalNotes("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, existingInvoice, job?.id]);
+
+  // Compute totals
+  const subtotal = lineItems.reduce((s, li) => s + (Number(li.this_period) || 0) + (Number(li.materials_stored) || 0), 0);
+  const retainageAmount = subtotal * (Number(retainagePct) || 0) / 100;
+  const totalAmount = subtotal - retainageAmount;
+
+  const updateLine = (idx, field, value) => {
+    setLineItems((prev) => prev.map((li, i) => i === idx ? { ...li, [field]: value } : li));
+  };
+  const addLine = () => {
+    setLineItems((prev) => [...prev, { description: "", scheduled_value: 0, this_period: 0, materials_stored: 0 }]);
+  };
+  const removeLine = (idx) => {
+    setLineItems((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSave = async () => {
+    if (!invoiceNumber.trim()) { toast.error("Invoice number required"); return; }
+    if (lineItems.length === 0) { toast.error("Add at least one line item"); return; }
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const payload = {
+        job_id: job.id,
+        client_id: client?.id || null,
+        invoice_number: invoiceNumber.trim(),
+        milestone: milestone || null,
+        invoice_date: invoiceDate,
+        due_date: dueDate || null,
+        line_items: lineItems,
+        subtotal,
+        retainage_pct: Number(retainagePct) || 0,
+        retainage_amount: retainageAmount,
+        total_amount: totalAmount,
+        contract_amount: Number(job?.budget) || 0,
+        previous_billed: prevInvoiceTotal || 0,
+        amount_due: totalAmount,
+        notes_to_client: notesToClient.trim() || null,
+        internal_notes: internalNotes.trim() || null,
+      };
+
+      let result;
+      if (existingInvoice) {
+        const { data, error } = await supabase
+          .from("invoices")
+          .update(payload)
+          .eq("id", existingInvoice.id)
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      } else {
+        const { data, error } = await supabase
+          .from("invoices")
+          .insert({
+            ...payload,
+            status: "draft",
+            created_by: session?.user?.id,
+            created_by_email: session?.user?.email,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      }
+      onSaved(result, !!existingInvoice);
+      toast.success(existingInvoice ? "Invoice updated" : "Invoice created");
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4 py-8 overflow-y-auto"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-3xl w-full p-6 my-auto"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Receipt className="w-5 h-5 text-amber-400" />
+              {existingInvoice ? `Edit ${existingInvoice.invoice_number}` : "New Invoice"}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              {job?.name} {client?.name ? `• ${client.name}` : ""}
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Invoice #</label>
+                <Inp value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Milestone</label>
+                <Sel value={milestone} onChange={(e) => setMilestone(e.target.value)}>
+                  <option>Deposit (40%)</option>
+                  <option>Progress (40%)</option>
+                  <option>Completion (20%)</option>
+                  <option>Custom</option>
+                </Sel>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Invoice Date</label>
+                <Inp type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Due Date</label>
+                <Inp type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Retainage % <span className="text-slate-600">(typically 0-10)</span></label>
+                <Inp type="number" min={0} max={50} step="0.5" value={retainagePct} onChange={(e) => setRetainagePct(e.target.value)} />
+              </div>
+            </div>
+
+            {/* LINE ITEMS — SOV style */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Schedule of Values</p>
+                <button onClick={addLine} className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1">
+                  <Plus className="w-3 h-3" /> Add Line
+                </button>
+              </div>
+              <div className="space-y-2">
+                {lineItems.map((li, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-1.5 items-center">
+                    <input
+                      placeholder="Description"
+                      value={li.description || ""}
+                      onChange={(e) => updateLine(idx, "description", e.target.value)}
+                      className="col-span-5 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                    />
+                    <input
+                      type="number" step="0.01" placeholder="Scheduled"
+                      value={li.scheduled_value ?? ""}
+                      onChange={(e) => updateLine(idx, "scheduled_value", e.target.value === "" ? 0 : Number(e.target.value))}
+                      className="col-span-2 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                      title="Scheduled value (full line item value)"
+                    />
+                    <input
+                      type="number" step="0.01" placeholder="This Period"
+                      value={li.this_period ?? ""}
+                      onChange={(e) => updateLine(idx, "this_period", e.target.value === "" ? 0 : Number(e.target.value))}
+                      className="col-span-2 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                      title="Work completed this period"
+                    />
+                    <input
+                      type="number" step="0.01" placeholder="Stored"
+                      value={li.materials_stored ?? ""}
+                      onChange={(e) => updateLine(idx, "materials_stored", e.target.value === "" ? 0 : Number(e.target.value))}
+                      className="col-span-2 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                      title="Materials stored on-site (not yet installed)"
+                    />
+                    <button
+                      onClick={() => removeLine(idx)}
+                      className="col-span-1 text-rose-400 hover:text-rose-300 p-1 transition-colors"
+                      title="Remove line"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2 mt-3 text-[10px] text-slate-500 px-2">
+                <span className="w-24 text-right">Description</span>
+                <span className="w-20 text-right">Scheduled</span>
+                <span className="w-20 text-right">This Period</span>
+                <span className="w-20 text-right">Stored</span>
+              </div>
+            </div>
+
+            {/* TOTALS */}
+            <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3 mb-4 text-xs space-y-1">
+              <div className="flex justify-between"><span className="text-slate-500">Contract amount</span><span className="text-slate-300">{currency(job?.budget || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Previously billed</span><span className="text-slate-300">{currency(prevInvoiceTotal || 0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Subtotal this period</span><span className="text-slate-200">{currency(subtotal)}</span></div>
+              {retainageAmount > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Retainage ({retainagePct}%)</span><span className="text-rose-400">−{currency(retainageAmount)}</span></div>
+              )}
+              <div className="flex justify-between font-semibold pt-1 border-t border-slate-800">
+                <span className="text-slate-300">AMOUNT DUE</span>
+                <span className="text-emerald-400">{currency(totalAmount)}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes to client (visible)</label>
+                <textarea rows={2} value={notesToClient} onChange={(e) => setNotesToClient(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Internal notes (private)</label>
+                <textarea rows={2} value={internalNotes} onChange={(e) => setInternalNotes(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button onClick={onClose} disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleSave} disabled={saving || !invoiceNumber.trim() || lineItems.length === 0}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? "Saving..." : (existingInvoice ? "Save Changes" : "Create Invoice")}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// LOG PAYMENT MODAL — record a payment + auto-suggest waiver
+// ================================================================
+function LogPaymentModal({ isOpen, invoice, job, settings, onClose, onSaved }) {
+  const toast = useToast();
+  const [amount, setAmount]         = useState("");
+  const [method, setMethod]         = useState("check");
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
+  const [reference, setReference]   = useState("");
+  const [notes, setNotes]           = useState("");
+  const [autoCreateWaiver, setAutoCreateWaiver] = useState(true);
+  const [saving, setSaving]         = useState(false);
+
+  useEffect(() => {
+    if (isOpen && invoice) {
+      const remaining = Math.max(0, (Number(invoice.total_amount) || 0) - (Number(invoice.amount_paid) || 0));
+      setAmount(remaining > 0 ? remaining.toFixed(2) : "");
+      setMethod("check");
+      setPaymentDate(new Date().toISOString().slice(0, 10));
+      setReference(""); setNotes(""); setAutoCreateWaiver(true);
+    }
+  }, [isOpen, invoice]);
+
+  if (!invoice) return null;
+
+  const remainingBefore = Math.max(0, (Number(invoice.total_amount) || 0) - (Number(invoice.amount_paid) || 0));
+  const willBePaid = (Number(invoice.amount_paid) || 0) + (Number(amount) || 0);
+  const isFullyPaid = willBePaid >= (Number(invoice.total_amount) || 0);
+  const isFinalInvoice = invoice.milestone?.includes("Completion") || invoice.milestone?.includes("Final");
+
+  // Suggest waiver type:
+  // - If this invoice payment fully pays AND it's the final milestone => full_unconditional
+  // - If this invoice payment fully pays this invoice but not final => partial_unconditional
+  // - If this invoice still has remaining due after this payment => partial_unconditional (for amount paid so far)
+  const suggestedWaiverType = isFullyPaid && isFinalInvoice
+    ? "full_unconditional"
+    : "partial_unconditional";
+  const suggestedWaiverMeta = getWaiverMeta(suggestedWaiverType);
+
+  const handleSave = async () => {
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { toast.error("Amount required"); return; }
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data: payment, error: payErr } = await supabase
+        .from("invoice_payments")
+        .insert({
+          invoice_id: invoice.id,
+          amount: amt,
+          payment_method: method,
+          payment_date: paymentDate,
+          reference: reference.trim() || null,
+          notes: notes.trim() || null,
+          recorded_by: session?.user?.id,
+          recorded_by_email: session?.user?.email,
+        })
+        .select()
+        .single();
+      if (payErr) throw payErr;
+
+      let waiver = null;
+      if (autoCreateWaiver) {
+        const waiverPayload = {
+          job_id: invoice.job_id,
+          client_id: invoice.client_id,
+          invoice_id: invoice.id,
+          payment_id: payment.id,
+          waiver_type: suggestedWaiverType,
+          property_address: job?.address || "",
+          property_county: "Muskegon",
+          owner_name: job?.client_name || "",
+          contractor_name: settings?.companyName || "Northshore Mechanical & Construction LLC",
+          payment_amount: amt,
+          payment_through_date: paymentDate,
+          status: "draft",
+          created_by: session?.user?.id,
+          created_by_email: session?.user?.email,
+        };
+        waiverPayload.document_text = generateLienWaiverText(waiverPayload);
+        const { data: w, error: wErr } = await supabase
+          .from("lien_waivers")
+          .insert(waiverPayload)
+          .select()
+          .single();
+        if (!wErr && w) {
+          waiver = w;
+          await supabase
+            .from("invoice_payments")
+            .update({ triggered_waiver_id: w.id })
+            .eq("id", payment.id);
+        }
+      }
+
+      onSaved({ payment, waiver });
+      toast.success(
+        autoCreateWaiver && waiver
+          ? `Payment logged. ${suggestedWaiverMeta.short} waiver drafted.`
+          : "Payment logged."
+      );
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-emerald-400" />
+              Log Payment
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">{invoice.invoice_number} • {currency(remainingBefore)} remaining</p>
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Amount</label>
+                  <Inp type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Date Received</label>
+                  <Inp type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Method</label>
+                <Sel value={method} onChange={(e) => setMethod(e.target.value)}>
+                  {PAYMENT_METHODS.map((m) => (<option key={m.id} value={m.id}>{m.label}</option>))}
+                </Sel>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">
+                  Reference <span className="text-slate-600">(check #, last-4, txn id)</span>
+                </label>
+                <Inp value={reference} onChange={(e) => setReference(e.target.value)} placeholder="optional" />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                <Inp value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
+              </div>
+
+              {/* Auto-waiver suggestion */}
+              <div className={`rounded-lg border p-3 ${suggestedWaiverMeta.bg} ${suggestedWaiverMeta.border}`}>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoCreateWaiver}
+                    onChange={(e) => setAutoCreateWaiver(e.target.checked)}
+                    className="mt-0.5 cursor-pointer"
+                  />
+                  <div className="flex-1">
+                    <p className={`text-xs font-semibold ${suggestedWaiverMeta.color}`}>
+                      Auto-draft {suggestedWaiverMeta.label} Waiver
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      {isFullyPaid && isFinalInvoice
+                        ? "Final payment fully clears the contract — releases all lien rights."
+                        : "Releases lien rights to the extent of this payment. You retain rights for unpaid amounts."}
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={onClose} disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleSave} disabled={saving || !amount}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-400 text-black hover:bg-emerald-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                {saving ? "Saving..." : "Log Payment"}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+
+// ================================================================
+// LIEN WAIVER MODAL — manual create or edit existing
+// ================================================================
+function LienWaiverModal({ isOpen, existingWaiver, job, client, settings, invoices, onClose, onSaved }) {
+  const toast = useToast();
+  const [waiverType, setWaiverType]       = useState("partial_unconditional");
+  const [linkedInvoiceId, setLinkedInvoiceId] = useState("");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentThroughDate, setPaymentThroughDate] = useState(new Date().toISOString().slice(0, 10));
+  const [conditionPaymentAmount, setConditionPaymentAmount] = useState("");
+  const [conditionPaymentMethod, setConditionPaymentMethod] = useState("check");
+  const [conditionReference, setConditionReference]         = useState("");
+  const [saving, setSaving]                                 = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (existingWaiver) {
+      setWaiverType(existingWaiver.waiver_type);
+      setLinkedInvoiceId(existingWaiver.invoice_id || "");
+      setPaymentAmount(existingWaiver.payment_amount ?? "");
+      setPaymentThroughDate(existingWaiver.payment_through_date || new Date().toISOString().slice(0, 10));
+      setConditionPaymentAmount(existingWaiver.condition_payment_amount ?? "");
+      setConditionPaymentMethod(existingWaiver.condition_payment_method || "check");
+      setConditionReference(existingWaiver.condition_reference || "");
+    } else {
+      setWaiverType("partial_unconditional");
+      setLinkedInvoiceId("");
+      setPaymentAmount("");
+      setPaymentThroughDate(new Date().toISOString().slice(0, 10));
+      setConditionPaymentAmount(""); setConditionPaymentMethod("check"); setConditionReference("");
+    }
+  }, [isOpen, existingWaiver]);
+
+  const meta = getWaiverMeta(waiverType);
+  const isConditional = waiverType.endsWith("_conditional");
+
+  const handleSave = async () => {
+    if (!paymentAmount || Number(paymentAmount) <= 0) { toast.error("Payment amount required"); return; }
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const payload = {
+        job_id: job.id,
+        client_id: client?.id || null,
+        invoice_id: linkedInvoiceId || null,
+        waiver_type: waiverType,
+        property_address: job?.address || "",
+        property_county: "Muskegon",
+        owner_name: job?.client_name || client?.name || "",
+        contractor_name: settings?.companyName || "Northshore Mechanical & Construction LLC",
+        payment_amount: Number(paymentAmount),
+        payment_through_date: paymentThroughDate,
+        condition_payment_amount: isConditional ? (Number(conditionPaymentAmount) || Number(paymentAmount)) : null,
+        condition_payment_method: isConditional ? conditionPaymentMethod : null,
+        condition_reference: isConditional ? (conditionReference.trim() || null) : null,
+      };
+      payload.document_text = generateLienWaiverText(payload);
+
+      let result;
+      if (existingWaiver) {
+        const { data, error } = await supabase
+          .from("lien_waivers")
+          .update(payload)
+          .eq("id", existingWaiver.id)
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      } else {
+        const { data, error } = await supabase
+          .from("lien_waivers")
+          .insert({
+            ...payload,
+            status: "draft",
+            created_by: session?.user?.id,
+            created_by_email: session?.user?.email,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      }
+      onSaved(result, !!existingWaiver);
+      toast.success(existingWaiver ? "Waiver updated" : "Waiver drafted");
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4 py-8 overflow-y-auto"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-xl w-full p-6 my-auto"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <FileText className="w-5 h-5 text-amber-400" />
+              {existingWaiver ? "Edit Lien Waiver" : "New Lien Waiver"}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">MCL 570.1115(9) statutory form</p>
+
+            <div className="space-y-3">
+              {/* Waiver type picker */}
+              <div>
+                <label className="block text-xs text-slate-400 mb-1.5">Waiver Type</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {WAIVER_TYPES.map((w) => (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() => setWaiverType(w.id)}
+                      className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+                        waiverType === w.id
+                          ? `${w.bg} ${w.color} ${w.border}`
+                          : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+                      }`}
+                    >
+                      <p className="font-semibold">{w.label}</p>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-2">{meta.desc}</p>
+              </div>
+
+              {invoices.length > 0 && (
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Link to Invoice <span className="text-slate-600">(optional)</span></label>
+                  <Sel value={linkedInvoiceId} onChange={(e) => setLinkedInvoiceId(e.target.value)}>
+                    <option value="">— No invoice linked —</option>
+                    {invoices.map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        {inv.invoice_number} • {currency(inv.total_amount)} • {inv.status}
+                      </option>
+                    ))}
+                  </Sel>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Payment Amount</label>
+                  <Inp type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Through Date</label>
+                  <Inp type="date" value={paymentThroughDate} onChange={(e) => setPaymentThroughDate(e.target.value)} />
+                </div>
+              </div>
+
+              {isConditional && (
+                <div className="bg-amber-900/10 border border-amber-800/30 rounded-lg p-3 space-y-2">
+                  <p className="text-[10px] uppercase tracking-widest text-amber-400 font-semibold">Conditional Payment Details</p>
+                  <p className="text-[10px] text-slate-500">Required for conditional waivers — establishes when the waiver becomes effective.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-slate-400 mb-0.5">Expected Payment</label>
+                      <Inp type="number" step="0.01" value={conditionPaymentAmount} onChange={(e) => setConditionPaymentAmount(e.target.value)} placeholder={paymentAmount || "0.00"} />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-400 mb-0.5">Method</label>
+                      <Sel value={conditionPaymentMethod} onChange={(e) => setConditionPaymentMethod(e.target.value)}>
+                        {PAYMENT_METHODS.map((m) => (<option key={m.id} value={m.id}>{m.label}</option>))}
+                      </Sel>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-0.5">Reference</label>
+                    <Inp value={conditionReference} onChange={(e) => setConditionReference(e.target.value)} placeholder="check #, txn id..." />
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3 text-[10px] text-slate-500 space-y-0.5">
+                <p>Property: <span className="text-slate-300">{job?.address || "—"}</span></p>
+                <p>Owner: <span className="text-slate-300">{job?.client_name || client?.name || "—"}</span></p>
+                <p>Contractor: <span className="text-slate-300">{settings?.companyName || "Northshore"}</span></p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={onClose} disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleSave} disabled={saving || !paymentAmount}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? "Saving..." : (existingWaiver ? "Save Changes" : "Draft Waiver")}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// SWORN STATEMENT MODAL — generate the MCL 570.1110 doc
+// ================================================================
+function SwornStatementModal({ isOpen, existingStatement, job, client, settings, jobSubs, onClose, onSaved }) {
+  const toast = useToast();
+  const [statementNumber, setStatementNumber] = useState("");
+  const [statementDate, setStatementDate]     = useState(new Date().toISOString().slice(0, 10));
+  const [parties, setParties]                 = useState([]);
+  const [notarizedAt, setNotarizedAt]         = useState("");
+  const [notaryName, setNotaryName]           = useState("");
+  const [notaryCounty, setNotaryCounty]       = useState("Muskegon");
+  const [notaryCommission, setNotaryCommission] = useState("");
+  const [notes, setNotes]                     = useState("");
+  const [saving, setSaving]                   = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (existingStatement) {
+      setStatementNumber(existingStatement.statement_number);
+      setStatementDate(existingStatement.statement_date || new Date().toISOString().slice(0, 10));
+      setParties(existingStatement.parties || []);
+      setNotarizedAt(existingStatement.notarized_at ? existingStatement.notarized_at.slice(0, 10) : "");
+      setNotaryName(existingStatement.notary_name || "");
+      setNotaryCounty(existingStatement.notary_county || "Muskegon");
+      setNotaryCommission(existingStatement.notary_commission_expires || "");
+      setNotes(existingStatement.notes || "");
+    } else {
+      const year = new Date().getFullYear();
+      const seq = String(Date.now()).slice(-4);
+      setStatementNumber(`SS-${year}-${seq}`);
+      setStatementDate(new Date().toISOString().slice(0, 10));
+      // Pre-populate from job_subs registered for this job
+      setParties((jobSubs || []).map((s) => ({
+        name: s.name,
+        address: s.address || "",
+        type: s.party_type || "subcontractor",
+        contract_amount: Number(s.contract_amount) || 0,
+        paid_to_date: Number(s.paid_to_date) || 0,
+        balance_due: Math.max(0, (Number(s.contract_amount) || 0) - (Number(s.paid_to_date) || 0)),
+        notice_of_furnishing_received: s.notice_of_furnishing_received || false,
+      })));
+      setNotarizedAt(""); setNotaryName(""); setNotaryCounty("Muskegon"); setNotaryCommission(""); setNotes("");
+    }
+  }, [isOpen, existingStatement, jobSubs]);
+
+  const updateParty = (idx, field, value) => {
+    setParties((prev) => prev.map((p, i) => {
+      if (i !== idx) return p;
+      const updated = { ...p, [field]: value };
+      if (field === "contract_amount" || field === "paid_to_date") {
+        updated.balance_due = Math.max(0, (Number(updated.contract_amount) || 0) - (Number(updated.paid_to_date) || 0));
+      }
+      return updated;
+    }));
+  };
+  const addParty = () => {
+    setParties((prev) => [...prev, { name: "", address: "", type: "subcontractor", contract_amount: 0, paid_to_date: 0, balance_due: 0 }]);
+  };
+  const removeParty = (idx) => {
+    setParties((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const totals = parties.reduce((acc, p) => ({
+    contract: acc.contract + (Number(p.contract_amount) || 0),
+    paid: acc.paid + (Number(p.paid_to_date) || 0),
+    due: acc.due + (Number(p.balance_due) || 0),
+  }), { contract: 0, paid: 0, due: 0 });
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const payload = {
+        job_id: job.id,
+        client_id: client?.id || null,
+        statement_number: statementNumber,
+        statement_date: statementDate,
+        property_address: job?.address || "",
+        property_county: "Muskegon",
+        is_residential: true,
+        deponent_name: settings?.ownerName || "Connor Garza",
+        deponent_role: "Owner / Member",
+        contractor_name: settings?.companyName || "Northshore Mechanical & Construction LLC",
+        parties,
+        total_contract_amount: totals.contract,
+        total_paid_to_date: totals.paid,
+        total_balance_due: totals.due,
+        notarized_at: notarizedAt || null,
+        notary_name: notaryName.trim() || null,
+        notary_county: notaryCounty.trim() || "Muskegon",
+        notary_commission_expires: notaryCommission || null,
+        notes: notes.trim() || null,
+        status: notarizedAt ? "notarized" : "draft",
+      };
+      payload.document_text = generateSwornStatementText(payload);
+
+      let result;
+      if (existingStatement) {
+        const { data, error } = await supabase
+          .from("sworn_statements")
+          .update(payload)
+          .eq("id", existingStatement.id)
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      } else {
+        const { data, error } = await supabase
+          .from("sworn_statements")
+          .insert({
+            ...payload,
+            created_by: session?.user?.id,
+            created_by_email: session?.user?.email,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      }
+      onSaved(result, !!existingStatement);
+      toast.success(existingStatement ? "Sworn statement updated" : "Sworn statement drafted");
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4 py-8 overflow-y-auto"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-3xl w-full p-6 my-auto"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <FileText className="w-5 h-5 text-amber-400" />
+              {existingStatement ? `Edit ${existingStatement.statement_number}` : "New Sworn Statement"}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              MCL 570.1110 • Required before collecting on bank-financed residential jobs
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Statement #</label>
+                <Inp value={statementNumber} onChange={(e) => setStatementNumber(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Statement Date</label>
+                <Inp type="date" value={statementDate} onChange={(e) => setStatementDate(e.target.value)} />
+              </div>
+            </div>
+
+            {/* Parties */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">
+                  Subcontractors / Suppliers / Laborers ({parties.length})
+                </p>
+                <button onClick={addParty} className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1">
+                  <Plus className="w-3 h-3" /> Add Party
+                </button>
+              </div>
+              {parties.length === 0 ? (
+                <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-4 text-center">
+                  <p className="text-xs text-slate-500">No subs/suppliers added.</p>
+                  <p className="text-[10px] text-slate-600 mt-1">
+                    If you're working solo with materials from your own inventory, the statement notes that explicitly.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {parties.map((p, idx) => (
+                    <div key={idx} className="bg-slate-950/40 border border-slate-800 rounded-lg p-3 space-y-2">
+                      <div className="grid grid-cols-12 gap-1.5">
+                        <input
+                          placeholder="Name"
+                          value={p.name}
+                          onChange={(e) => updateParty(idx, "name", e.target.value)}
+                          className="col-span-5 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                        />
+                        <select
+                          value={p.type}
+                          onChange={(e) => updateParty(idx, "type", e.target.value)}
+                          className="col-span-3 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                        >
+                          <option value="subcontractor">Sub</option>
+                          <option value="supplier">Supplier</option>
+                          <option value="laborer">Laborer</option>
+                        </select>
+                        <input
+                          placeholder="Address"
+                          value={p.address || ""}
+                          onChange={(e) => updateParty(idx, "address", e.target.value)}
+                          className="col-span-3 bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                        />
+                        <button onClick={() => removeParty(idx)} className="col-span-1 text-rose-400 hover:text-rose-300 transition-colors" title="Remove">
+                          <Trash2 className="w-3.5 h-3.5 mx-auto" />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <input
+                          type="number" step="0.01" placeholder="Contract"
+                          value={p.contract_amount ?? ""}
+                          onChange={(e) => updateParty(idx, "contract_amount", e.target.value === "" ? 0 : Number(e.target.value))}
+                          className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                        />
+                        <input
+                          type="number" step="0.01" placeholder="Paid"
+                          value={p.paid_to_date ?? ""}
+                          onChange={(e) => updateParty(idx, "paid_to_date", e.target.value === "" ? 0 : Number(e.target.value))}
+                          className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                        />
+                        <div className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-amber-400 text-right tabular-nums">
+                          {currency(p.balance_due)}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="bg-slate-950/60 border border-slate-700 rounded-lg p-2 grid grid-cols-3 gap-2 text-xs font-semibold">
+                    <div className="text-right"><span className="text-slate-500 mr-1">Contract:</span><span className="text-slate-200">{currency(totals.contract)}</span></div>
+                    <div className="text-right"><span className="text-slate-500 mr-1">Paid:</span><span className="text-slate-200">{currency(totals.paid)}</span></div>
+                    <div className="text-right"><span className="text-slate-500 mr-1">Due:</span><span className="text-amber-400">{currency(totals.due)}</span></div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Notary */}
+            <div className="bg-amber-900/10 border border-amber-800/30 rounded-lg p-3 mb-4 space-y-2">
+              <p className="text-[10px] uppercase tracking-widest text-amber-400 font-semibold">Notary Block <span className="text-slate-600 font-normal">(fill in after notarization)</span></p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-0.5">Notarized On</label>
+                  <Inp type="date" value={notarizedAt} onChange={(e) => setNotarizedAt(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-0.5">Notary Name</label>
+                  <Inp value={notaryName} onChange={(e) => setNotaryName(e.target.value)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-0.5">Notary County</label>
+                  <Inp value={notaryCounty} onChange={(e) => setNotaryCounty(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-0.5">Commission Expires</label>
+                  <Inp type="date" value={notaryCommission} onChange={(e) => setNotaryCommission(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button onClick={onClose} disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? "Saving..." : (existingStatement ? "Save Changes" : "Draft Statement")}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// DOCUMENT PREVIEW MODAL — read-only view of any rendered doc
+// ================================================================
+function DocumentPreviewModal({ isOpen, title, text, onClose }) {
+  const toast = useToast();
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text || "");
+      toast.success("Copied to clipboard");
+    } catch (e) {
+      toast.error("Copy failed");
+    }
+  };
+  const handlePrint = () => {
+    const w = window.open("", "_blank");
+    if (!w) { toast.error("Popup blocked — allow popups to print"); return; }
+    w.document.write(`<html><head><title>${title}</title>
+      <style>body { font-family: 'Courier New', monospace; font-size: 11pt; line-height: 1.4; padding: 0.75in; white-space: pre-wrap; }</style>
+      </head><body>${(text || "").replace(/[<>]/g, (c) => ({ "<": "&lt;", ">": "&gt;" }[c]))}</body></html>`);
+    w.document.close();
+    setTimeout(() => w.print(), 250);
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4 py-8 overflow-y-auto"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-3xl w-full p-6 my-auto"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-amber-400" /> {title}
+              </h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-white p-1">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <pre className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-[11px] text-slate-300 font-mono whitespace-pre-wrap max-h-[60vh] overflow-y-auto">
+{text}
+            </pre>
+            <div className="flex gap-2 justify-end mt-4">
+              <button onClick={handleCopy}
+                className="px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
+                <Copy className="w-3.5 h-3.5" /> Copy Text
+              </button>
+              <button onClick={handlePrint}
+                className="px-3 py-2 rounded-lg text-xs font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" /> Print / PDF
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+
+// ================================================================
+// JOB DOCUMENTS — sub-tab inside Job detail view
+// Shows invoices, lien waivers, sworn statements, payment ledger
+// for a single job, with the document timeline and quick actions.
+// ================================================================
+function JobDocuments({
+  job,
+  client,
+  settings,
+  invoices, setInvoices,
+  invoicePayments, setInvoicePayments,
+  lienWaivers, setLienWaivers,
+  swornStatements, setSwornStatements,
+  jobSubs, setJobSubs,
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  // Filter to this job's records
+  const jobInvoices = invoices.filter((i) => i.job_id === job.id && !i.deleted_at);
+  const jobPayments = invoicePayments.filter((p) => jobInvoices.some((i) => i.id === p.invoice_id));
+  const jobWaivers = lienWaivers.filter((w) => w.job_id === job.id && !w.deleted_at);
+  const jobStatements = swornStatements.filter((s) => s.job_id === job.id && !s.deleted_at);
+  const jobSubsForJob = jobSubs.filter((s) => s.job_id === job.id && !s.deleted_at);
+
+  // Modal state
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+  const [editingInvoice, setEditingInvoice]     = useState(null);
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentInvoice, setPaymentInvoice]     = useState(null);
+  const [waiverModalOpen, setWaiverModalOpen]   = useState(false);
+  const [editingWaiver, setEditingWaiver]       = useState(null);
+  const [statementModalOpen, setStatementModalOpen] = useState(false);
+  const [editingStatement, setEditingStatement] = useState(null);
+  const [previewOpen, setPreviewOpen]           = useState(false);
+  const [previewTitle, setPreviewTitle]         = useState("");
+  const [previewText, setPreviewText]           = useState("");
+
+  // Aggregates
+  const totalInvoiced = jobInvoices.reduce((s, i) => s + (Number(i.total_amount) || 0), 0);
+  const totalPaid = jobInvoices.reduce((s, i) => s + (Number(i.amount_paid) || 0), 0);
+  const totalDue = totalInvoiced - totalPaid;
+  const contractAmount = Number(job?.budget) || 0;
+  const remainingContract = contractAmount - totalInvoiced;
+
+  // Save handlers
+  const handleInvoiceSaved = (saved, isEdit) => {
+    setInvoiceModalOpen(false);
+    setEditingInvoice(null);
+    if (isEdit) {
+      setInvoices((prev) => prev.map((i) => (i.id === saved.id ? saved : i)));
+    } else {
+      setInvoices((prev) => [saved, ...prev]);
+    }
+  };
+
+  const handlePaymentSaved = async ({ payment, waiver }) => {
+    setPaymentModalOpen(false);
+    setPaymentInvoice(null);
+    setInvoicePayments((prev) => [payment, ...prev]);
+    if (waiver) setLienWaivers((prev) => [waiver, ...prev]);
+    // Refetch the invoice to pick up trigger-updated status/amount_paid
+    const { data } = await supabase.from("invoices").select("*").eq("id", payment.invoice_id).single();
+    if (data) setInvoices((prev) => prev.map((i) => (i.id === data.id ? data : i)));
+  };
+
+  const handleWaiverSaved = (saved, isEdit) => {
+    setWaiverModalOpen(false);
+    setEditingWaiver(null);
+    if (isEdit) {
+      setLienWaivers((prev) => prev.map((w) => (w.id === saved.id ? saved : w)));
+    } else {
+      setLienWaivers((prev) => [saved, ...prev]);
+    }
+  };
+
+  const handleStatementSaved = (saved, isEdit) => {
+    setStatementModalOpen(false);
+    setEditingStatement(null);
+    if (isEdit) {
+      setSwornStatements((prev) => prev.map((s) => (s.id === saved.id ? saved : s)));
+    } else {
+      setSwornStatements((prev) => [saved, ...prev]);
+    }
+  };
+
+  const deleteInvoice = async (inv) => {
+    const ok = await confirm({
+      title: "Delete invoice?",
+      message: `Invoice ${inv.invoice_number} and any logged payments will be removed. This cannot be undone.`,
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("invoices").update({ deleted_at: new Date().toISOString() }).eq("id", inv.id);
+    if (!error) {
+      setInvoices((prev) => prev.map((i) => (i.id === inv.id ? { ...i, deleted_at: new Date().toISOString() } : i)));
+      toast.success("Invoice deleted");
+    }
+  };
+
+  const markWaiverEffective = async (w) => {
+    const { data, error } = await supabase
+      .from("lien_waivers")
+      .update({ status: "effective", effective_at: new Date().toISOString() })
+      .eq("id", w.id)
+      .select()
+      .single();
+    if (!error && data) {
+      setLienWaivers((prev) => prev.map((wv) => (wv.id === w.id ? data : wv)));
+      toast.success("Waiver marked effective");
+    }
+  };
+
+  const previewWaiver = (w) => {
+    setPreviewTitle(`${getWaiverMeta(w.waiver_type).label} Waiver`);
+    setPreviewText(w.document_text || generateLienWaiverText(w));
+    setPreviewOpen(true);
+  };
+  const previewStatement = (s) => {
+    setPreviewTitle(`Sworn Statement ${s.statement_number}`);
+    setPreviewText(s.document_text || generateSwornStatementText(s));
+    setPreviewOpen(true);
+  };
+
+  // Build the timeline — chronological merge of all events
+  const timeline = [
+    ...jobInvoices.map((i) => ({
+      type: "invoice",
+      date: i.invoice_date,
+      title: `${i.invoice_number} • ${i.milestone || ""}`,
+      detail: `${currency(i.total_amount)} • ${getInvoiceStatusMeta(i.status).label}`,
+      icon: Receipt,
+      colorClass: "text-blue-400",
+      data: i,
+    })),
+    ...jobPayments.map((p) => {
+      const inv = jobInvoices.find((i) => i.id === p.invoice_id);
+      return {
+        type: "payment",
+        date: p.payment_date,
+        title: `Payment received • ${currency(p.amount)}`,
+        detail: `${PAYMENT_METHODS.find((m) => m.id === p.payment_method)?.label || p.payment_method}${p.reference ? ` • ${p.reference}` : ""} • ${inv?.invoice_number || ""}`,
+        icon: DollarSign,
+        colorClass: "text-emerald-400",
+        data: p,
+      };
+    }),
+    ...jobWaivers.map((w) => ({
+      type: "waiver",
+      date: w.created_at?.slice(0, 10) || w.payment_through_date,
+      title: `${getWaiverMeta(w.waiver_type).label} Waiver`,
+      detail: `${currency(w.payment_amount)} • ${w.status}`,
+      icon: FileText,
+      colorClass: getWaiverMeta(w.waiver_type).color,
+      data: w,
+    })),
+    ...jobStatements.map((s) => ({
+      type: "statement",
+      date: s.statement_date,
+      title: `Sworn Statement ${s.statement_number}`,
+      detail: `${s.parties?.length || 0} parties • ${s.status}`,
+      icon: FileText,
+      colorClass: "text-purple-400",
+      data: s,
+    })),
+  ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  return (
+    <div className="space-y-4">
+      {/* SUMMARY HEADER */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Contract</p>
+          <p className="text-lg font-bold text-slate-100 tabular-nums">{currency(contractAmount)}</p>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Invoiced</p>
+          <p className="text-lg font-bold text-blue-400 tabular-nums">{currency(totalInvoiced)}</p>
+          {remainingContract !== 0 && (
+            <p className="text-[10px] text-slate-600 mt-0.5">
+              {remainingContract > 0 ? `${currency(remainingContract)} unbilled` : `${currency(Math.abs(remainingContract))} over`}
+            </p>
+          )}
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Collected</p>
+          <p className="text-lg font-bold text-emerald-400 tabular-nums">{currency(totalPaid)}</p>
+        </div>
+        <div className={`border rounded-xl p-3 ${
+          totalDue > 0 ? "bg-amber-950/20 border-amber-800/40" : "bg-slate-900 border-slate-800"
+        }`}>
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Outstanding</p>
+          <p className={`text-lg font-bold tabular-nums ${totalDue > 0 ? "text-amber-400" : "text-slate-400"}`}>
+            {currency(totalDue)}
+          </p>
+        </div>
+      </div>
+
+      {/* QUICK ACTIONS */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => { setEditingInvoice(null); setInvoiceModalOpen(true); }}
+          className="px-3 py-2 rounded-lg text-xs font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors flex items-center gap-1.5"
+        >
+          <Receipt className="w-3.5 h-3.5" /> New Invoice
+        </button>
+        <button
+          onClick={() => { setEditingWaiver(null); setWaiverModalOpen(true); }}
+          className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1.5"
+        >
+          <FileText className="w-3.5 h-3.5" /> Lien Waiver
+        </button>
+        <button
+          onClick={() => { setEditingStatement(null); setStatementModalOpen(true); }}
+          className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1.5"
+        >
+          <FileText className="w-3.5 h-3.5" /> Sworn Statement
+        </button>
+      </div>
+
+      {/* INVOICES LIST */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold">
+              Invoices ({jobInvoices.length})
+            </p>
+          </div>
+          {jobInvoices.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center py-4">No invoices yet. Click "New Invoice" to start the 40/40/20 milestone schedule.</p>
+          ) : (
+            <div className="space-y-2">
+              {jobInvoices.map((inv) => {
+                const status = getInvoiceStatusMeta(inv.status);
+                const remaining = (Number(inv.total_amount) || 0) - (Number(inv.amount_paid) || 0);
+                return (
+                  <div key={inv.id} className="bg-slate-950/40 border border-slate-800 rounded-lg p-3">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-semibold text-slate-100">{inv.invoice_number}</p>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${status.bg} ${status.color} border ${status.border}`}>
+                            {status.label}
+                          </span>
+                          {inv.milestone && (
+                            <span className="text-[10px] text-slate-500">• {inv.milestone}</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          {new Date(inv.invoice_date).toLocaleDateString()}
+                          {inv.due_date && ` • Due ${new Date(inv.due_date).toLocaleDateString()}`}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-slate-100 tabular-nums">{currency(inv.total_amount)}</p>
+                        {inv.amount_paid > 0 && (
+                          <p className="text-[10px] text-emerald-400 tabular-nums">{currency(inv.amount_paid)} paid</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                      <div className="flex gap-1">
+                        {remaining > 0.01 && (
+                          <button
+                            onClick={() => { setPaymentInvoice(inv); setPaymentModalOpen(true); }}
+                            className="px-2 py-1 rounded text-[10px] font-semibold bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50 border border-emerald-800/50 transition-colors flex items-center gap-1"
+                          >
+                            <DollarSign className="w-3 h-3" /> Log Payment
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { setEditingInvoice(inv); setInvoiceModalOpen(true); }}
+                          className="px-2 py-1 rounded text-[10px] font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1"
+                        >
+                          <Pencil className="w-3 h-3" /> Edit
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => deleteInvoice(inv)}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* LIEN WAIVERS LIST */}
+      <Card>
+        <CardContent className="p-4">
+          <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-3">
+            Lien Waivers ({jobWaivers.length})
+          </p>
+          {jobWaivers.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center py-4">No lien waivers yet. Auto-drafted when payments are logged, or click "Lien Waiver" above.</p>
+          ) : (
+            <div className="space-y-2">
+              {jobWaivers.map((w) => {
+                const meta = getWaiverMeta(w.waiver_type);
+                return (
+                  <div key={w.id} className={`border rounded-lg p-3 ${meta.bg} ${meta.border}`}>
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className={`text-sm font-semibold ${meta.color}`}>{meta.label}</p>
+                          <span className="text-[10px] text-slate-500">• {w.status}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          {currency(w.payment_amount)} through {new Date(w.payment_through_date).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => previewWaiver(w)}
+                          className="px-2 py-1 rounded text-[10px] font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1"
+                        >
+                          <Eye className="w-3 h-3" /> View / Print
+                        </button>
+                        <button
+                          onClick={() => { setEditingWaiver(w); setWaiverModalOpen(true); }}
+                          className="px-2 py-1 rounded text-[10px] font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1"
+                        >
+                          <Pencil className="w-3 h-3" /> Edit
+                        </button>
+                        {w.waiver_type.endsWith("_conditional") && w.status !== "effective" && (
+                          <button
+                            onClick={() => markWaiverEffective(w)}
+                            className="px-2 py-1 rounded text-[10px] font-semibold bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50 border border-emerald-800/50 transition-colors flex items-center gap-1"
+                            title="Mark effective once payment has cleared"
+                          >
+                            <CheckCircle2 className="w-3 h-3" /> Mark Effective
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* SWORN STATEMENTS LIST */}
+      <Card>
+        <CardContent className="p-4">
+          <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-3">
+            Sworn Statements ({jobStatements.length})
+          </p>
+          {jobStatements.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center py-4">No sworn statements yet. Required for bank-financed residential jobs (MCL 570.1110).</p>
+          ) : (
+            <div className="space-y-2">
+              {jobStatements.map((s) => (
+                <div key={s.id} className="bg-slate-950/40 border border-slate-800 rounded-lg p-3">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-slate-100">{s.statement_number}</p>
+                        <span className="text-[10px] text-slate-500">• {s.status}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        {new Date(s.statement_date).toLocaleDateString()} • {s.parties?.length || 0} parties • {currency(s.total_balance_due)} due
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-1 pt-2 border-t border-slate-800">
+                    <button
+                      onClick={() => previewStatement(s)}
+                      className="px-2 py-1 rounded text-[10px] font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1"
+                    >
+                      <Eye className="w-3 h-3" /> View / Print
+                    </button>
+                    <button
+                      onClick={() => { setEditingStatement(s); setStatementModalOpen(true); }}
+                      className="px-2 py-1 rounded text-[10px] font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1"
+                    >
+                      <Pencil className="w-3 h-3" /> Edit
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* TIMELINE */}
+      {timeline.length > 0 && (
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-3">
+              Document Timeline
+            </p>
+            <div className="space-y-1.5">
+              {timeline.map((evt, idx) => {
+                const Icon = evt.icon;
+                return (
+                  <div key={idx} className="flex items-start gap-2 px-2 py-1.5 rounded bg-slate-800/30 text-xs">
+                    <Icon className={`w-3.5 h-3.5 ${evt.colorClass} shrink-0 mt-0.5`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-slate-200">{evt.title}</p>
+                      <p className="text-[10px] text-slate-500">{evt.detail}</p>
+                    </div>
+                    <span className="text-[10px] text-slate-600 shrink-0">
+                      {evt.date ? new Date(evt.date).toLocaleDateString([], { month: "short", day: "numeric" }) : ""}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MODALS */}
+      <InvoiceFormModal
+        isOpen={invoiceModalOpen}
+        existingInvoice={editingInvoice}
+        job={job}
+        client={client}
+        prevInvoiceTotal={jobInvoices.filter((i) => i.id !== editingInvoice?.id).reduce((s, i) => s + (Number(i.total_amount) || 0), 0)}
+        onClose={() => { setInvoiceModalOpen(false); setEditingInvoice(null); }}
+        onSaved={handleInvoiceSaved}
+      />
+      <LogPaymentModal
+        isOpen={paymentModalOpen}
+        invoice={paymentInvoice}
+        job={job}
+        settings={settings}
+        onClose={() => { setPaymentModalOpen(false); setPaymentInvoice(null); }}
+        onSaved={handlePaymentSaved}
+      />
+      <LienWaiverModal
+        isOpen={waiverModalOpen}
+        existingWaiver={editingWaiver}
+        job={job}
+        client={client}
+        settings={settings}
+        invoices={jobInvoices}
+        onClose={() => { setWaiverModalOpen(false); setEditingWaiver(null); }}
+        onSaved={handleWaiverSaved}
+      />
+      <SwornStatementModal
+        isOpen={statementModalOpen}
+        existingStatement={editingStatement}
+        job={job}
+        client={client}
+        settings={settings}
+        jobSubs={jobSubsForJob}
+        onClose={() => { setStatementModalOpen(false); setEditingStatement(null); }}
+        onSaved={handleStatementSaved}
+      />
+      <DocumentPreviewModal
+        isOpen={previewOpen}
+        title={previewTitle}
+        text={previewText}
+        onClose={() => setPreviewOpen(false)}
+      />
+    </div>
+  );
+}
+
+
+// ================================================================
 // LOGIN SCREEN
 // ================================================================
 function LoginScreen({ onLogin }) {
@@ -6280,7 +8107,7 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
 // JOB OPERATIONS
 // Punch list, material deliveries, photos sub-component for Jobs
 // ================================================================
-function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs, timeEntries, setTimeEntries, activeTimeEntry }) {
+function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs, timeEntries, setTimeEntries, activeTimeEntry, client, invoices, setInvoices, invoicePayments, setInvoicePayments, lienWaivers, setLienWaivers, swornStatements, setSwornStatements, jobSubs, setJobSubs }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [opsTab, setOpsTab] = useState("Punch");
@@ -6502,6 +8329,9 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
           </TabsTrigger>
           <TabsTrigger value="Time">
             Time ({formatDuration(totalMinutes)})
+          </TabsTrigger>
+          <TabsTrigger value="Documents">
+            Documents
           </TabsTrigger>
         </TabsList>
 
@@ -6870,6 +8700,25 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* DOCUMENTS — invoices, lien waivers, sworn statements */}
+        <TabsContent value="Documents">
+          <JobDocuments
+            job={job}
+            client={client}
+            settings={settings}
+            invoices={invoices}
+            setInvoices={setInvoices}
+            invoicePayments={invoicePayments}
+            setInvoicePayments={setInvoicePayments}
+            lienWaivers={lienWaivers}
+            setLienWaivers={setLienWaivers}
+            swornStatements={swornStatements}
+            setSwornStatements={setSwornStatements}
+            jobSubs={jobSubs}
+            setJobSubs={setJobSubs}
+          />
+        </TabsContent>
       </Tabs>
 
       {/* Manual time entry modal — shared by Add and Edit */}
@@ -6885,7 +8734,7 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
     </div>
   );
 }
-function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates, timeEntries, setTimeEntries, activeTimeEntry }) {
+function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates, timeEntries, setTimeEntries, activeTimeEntry, invoices, setInvoices, invoicePayments, setInvoicePayments, lienWaivers, setLienWaivers, swornStatements, setSwornStatements, jobSubs, setJobSubs }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [name, setName] = useState("");
@@ -7329,6 +9178,17 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                             timeEntries={timeEntries}
                             setTimeEntries={setTimeEntries}
                             activeTimeEntry={activeTimeEntry}
+                            client={clients.find((c) => c.id === j.client_id)}
+                            invoices={invoices}
+                            setInvoices={setInvoices}
+                            invoicePayments={invoicePayments}
+                            setInvoicePayments={setInvoicePayments}
+                            lienWaivers={lienWaivers}
+                            setLienWaivers={setLienWaivers}
+                            swornStatements={swornStatements}
+                            setSwornStatements={setSwornStatements}
+                            jobSubs={jobSubs}
+                            setJobSubs={setJobSubs}
                           />
 
                           {/* DELETE JOB */}
@@ -8499,6 +10359,11 @@ function AppInner() {
   const [tools, setTools] = useState([]);
   const [toolUses, setToolUses] = useState([]);
   const [toolMaintenance, setToolMaintenance] = useState([]);
+  const [invoices, setInvoices] = useState([]);
+  const [invoicePayments, setInvoicePayments] = useState([]);
+  const [lienWaivers, setLienWaivers] = useState([]);
+  const [swornStatements, setSwornStatements] = useState([]);
+  const [jobSubs, setJobSubs] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Settings
@@ -8552,7 +10417,7 @@ function AppInner() {
     }
     let alive = true;
     (async () => {
-      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes] = await Promise.all([
+      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes, invRes, payRes, waiverRes, stmtRes, subsRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
         supabase.from("clients").select("*").order("name"),
@@ -8570,6 +10435,11 @@ function AppInner() {
         supabase.from("tools").select("*").order("created_at", { ascending: false }),
         supabase.from("tool_uses").select("*").order("used_date", { ascending: false }).limit(2000),
         supabase.from("tool_maintenance").select("*").order("service_date", { ascending: false }).limit(1000),
+        supabase.from("invoices").select("*").order("invoice_date", { ascending: false }),
+        supabase.from("invoice_payments").select("*").order("payment_date", { ascending: false }),
+        supabase.from("lien_waivers").select("*").order("created_at", { ascending: false }),
+        supabase.from("sworn_statements").select("*").order("statement_date", { ascending: false }),
+        supabase.from("job_subs").select("*").order("created_at", { ascending: false }),
       ]);
       if (!alive) return;
       setJobs(jobsRes.data || []);
@@ -8583,6 +10453,11 @@ function AppInner() {
       setTools(toolsRes.data || []);
       setToolUses(toolUsesRes.data || []);
       setToolMaintenance(toolMaintRes.data || []);
+      setInvoices(invRes.data || []);
+      setInvoicePayments(payRes.data || []);
+      setLienWaivers(waiverRes.data || []);
+      setSwornStatements(stmtRes.data || []);
+      setJobSubs(subsRes.data || []);
       setDataLoaded(true);
     })();
     return () => { alive = false; };
@@ -8653,6 +10528,7 @@ function AppInner() {
     setTimeEntries([]); setActiveTimeEntry(null);
     setDocuments([]);
     setTools([]); setToolUses([]); setToolMaintenance([]);
+    setInvoices([]); setInvoicePayments([]); setLienWaivers([]); setSwornStatements([]); setJobSubs([]);
     setDataLoaded(false);
     toast.info("Signed out");
   };
@@ -8854,6 +10730,16 @@ function AppInner() {
                 timeEntries={timeEntries}
                 setTimeEntries={setTimeEntries}
                 activeTimeEntry={activeTimeEntry}
+                invoices={invoices}
+                setInvoices={setInvoices}
+                invoicePayments={invoicePayments}
+                setInvoicePayments={setInvoicePayments}
+                lienWaivers={lienWaivers}
+                setLienWaivers={setLienWaivers}
+                swornStatements={swornStatements}
+                setSwornStatements={setSwornStatements}
+                jobSubs={jobSubs}
+                setJobSubs={setJobSubs}
               />
             )}
             {tab === "Daily" && (
