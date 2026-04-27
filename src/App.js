@@ -75,6 +75,18 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.1.1 — Apr 27 2026 — Pipeline polish patch
+// - Fix: button icons + text were unaligned — added inline-flex
+//        items-center to all Pipeline action buttons (Add Lead,
+//        Save Changes, Convert, Mark Lost, Archive, etc).
+// - Fix: "Failed to create job" on convert-to-Won. Was passing
+//        an `address` column that doesn't exist on jobs table.
+//        Removed; now matches existing Estimator job-creation
+//        schema (name, client_id, status, budget, actual).
+//        Lead's est_value flows into job.budget on convert.
+// - Improve: error toasts now show the actual Supabase error
+//        message so future schema mismatches are diagnosable.
+// ================================================================
 // NORTHSHORE OS v1.1.0 — Apr 27 2026 — Lead Pipeline (Kanban)
 // - New: top-level "Pipeline" tab between Estimator and Jobs
 // - New: 5-stage Kanban (New / Contacted / Site Visit / Estimate Sent / Won-Lost)
@@ -7397,7 +7409,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
         .select()
         .single();
       if (cErr) {
-        toast.error("Failed to create client");
+        toast.error("Failed to create client: " + cErr.message);
         return;
       }
       clientId = newClient.id;
@@ -7410,15 +7422,16 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
       const { data: newJob, error: jErr } = await supabase
         .from("jobs")
         .insert({
-          name: jobName || lead.scope || `${lead.name} project`,
+          name:      jobName || lead.scope || `${lead.name} project`,
           client_id: clientId,
-          address: lead.address,
-          status: "Active",
+          status:    "Active",
+          budget:    Number(lead.est_value) || 0,
+          actual:    0,
         })
         .select()
         .single();
       if (jErr) {
-        toast.error("Failed to create job");
+        toast.error("Failed to create job: " + jErr.message);
         return;
       }
       jobId = newJob.id;
@@ -7503,14 +7516,14 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
         <div className="flex items-center gap-2">
           <Btn
             onClick={() => setShowLost((v) => !v)}
-            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm"
+            className="inline-flex items-center bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm"
           >
             <Archive className="w-4 h-4 mr-1.5" />
             {showLost ? "Hide" : "Show"} Lost ({lostLeads.length})
           </Btn>
           <Btn
             onClick={() => setShowAddModal(true)}
-            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20"
+            className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20"
           >
             <UserPlus className="w-4 h-4 mr-1.5" />
             Add Lead
@@ -7555,7 +7568,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
             </div>
             <Btn
               onClick={() => setShowAddModal(true)}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/30"
+              className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/30"
             >
               <UserPlus className="w-4 h-4 mr-1.5" />
               Add your first lead
@@ -7937,7 +7950,7 @@ function AddLeadModal({ onClose, onAdd }) {
             <Btn
               onClick={submit}
               disabled={!canSave || saving}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? <Spinner /> : <><Save className="w-4 h-4 mr-1.5" />Add Lead</>}
             </Btn>
@@ -8151,7 +8164,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
           <div className="sticky bottom-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 px-5 py-4 flex items-center justify-between gap-2">
             <Btn
               onClick={onArchive}
-              className="bg-rose-950/40 hover:bg-rose-900/40 text-rose-300 border border-rose-900/60 text-sm"
+              className="inline-flex items-center bg-rose-950/40 hover:bg-rose-900/40 text-rose-300 border border-rose-900/60 text-sm"
             >
               <Trash2 className="w-4 h-4 mr-1.5" />
               Archive
@@ -8159,7 +8172,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
             <Btn
               onClick={handleSave}
               disabled={!dirty}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="w-4 h-4 mr-1.5" />
               Save Changes
@@ -8250,7 +8263,7 @@ function ConvertLeadModal({ lead, onClose, onConvert }) {
             <Btn
               onClick={submit}
               disabled={saving}
-              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold shadow-lg shadow-emerald-500/30 disabled:opacity-50"
+              className="inline-flex items-center bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold shadow-lg shadow-emerald-500/30 disabled:opacity-50"
             >
               {saving ? <Spinner /> : <><Trophy className="w-4 h-4 mr-1.5" />Convert</>}
             </Btn>
@@ -8328,7 +8341,7 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
             <Btn
               onClick={submit}
               disabled={saving}
-              className="bg-rose-500 hover:bg-rose-400 text-white font-semibold shadow-lg shadow-rose-500/30 disabled:opacity-50"
+              className="inline-flex items-center bg-rose-500 hover:bg-rose-400 text-white font-semibold shadow-lg shadow-rose-500/30 disabled:opacity-50"
             >
               {saving ? <Spinner /> : <><XCircle className="w-4 h-4 mr-1.5" />Mark Lost</>}
             </Btn>
