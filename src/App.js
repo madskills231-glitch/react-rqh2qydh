@@ -75,6 +75,22 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.1.2 — Apr 27 2026 — Pipeline ghost-overlay fix
+// - Fix: archiving a lead in Pipeline left a black overlay node
+//        attached to the DOM, making other tabs render empty.
+//        Root cause: AnimatePresence was placed INSIDE each modal
+//        component instead of at the parent level wrapping the
+//        conditional render. When the parent set drawerLead/etc to
+//        null, the modal unmounted but the fixed-inset-0 overlay
+//        wasn't cleaned up properly. Moved AnimatePresence to
+//        Pipeline parent for all 4 modals (AddLead, LeadDetail,
+//        Convert, MarkLost). Each conditional render is now
+//        wrapped in its own AnimatePresence with a stable key.
+// - Fix: Save Changes button looked uncolored when disabled —
+//        opacity-50 on amber-500 looked broken, not intentional.
+//        Now switches to a clean slate-800 disabled style with
+//        "No Changes" label so state is clearly readable.
+// ================================================================
 // NORTHSHORE OS v1.1.1 — Apr 27 2026 — Pipeline polish patch
 // - Fix: button icons + text were unaligned — added inline-flex
 //        items-center to all Pipeline action buttons (Add Lead,
@@ -7673,41 +7689,53 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
       )}
 
       {/* Modals + drawers */}
-      {showAddModal && (
-        <AddLeadModal
-          onClose={() => setShowAddModal(false)}
-          onAdd={handleAddLead}
-        />
-      )}
-      {drawerLead && (
-        <LeadDetailDrawer
-          lead={drawerLead}
-          clients={clients}
-          jobs={jobs}
-          estimates={estimates}
-          onClose={() => setDrawerLead(null)}
-          onUpdate={(patch) => handleUpdateLead(drawerLead.id, patch)}
-          onArchive={() => handleArchiveLead(drawerLead.id)}
-          onJumpToJob={(jobId) => {
-            setDrawerLead(null);
-            setTab("Jobs");
-          }}
-        />
-      )}
-      {convertingLead && (
-        <ConvertLeadModal
-          lead={convertingLead}
-          onClose={() => setConvertingLead(null)}
-          onConvert={handleConvertWon}
-        />
-      )}
-      {losingLead && (
-        <MarkLostModal
-          lead={losingLead}
-          onClose={() => setLosingLead(null)}
-          onMarkLost={handleMarkLost}
-        />
-      )}
+      <AnimatePresence>
+        {showAddModal && (
+          <AddLeadModal
+            key="add-lead-modal"
+            onClose={() => setShowAddModal(false)}
+            onAdd={handleAddLead}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {drawerLead && (
+          <LeadDetailDrawer
+            key="lead-detail-drawer"
+            lead={drawerLead}
+            clients={clients}
+            jobs={jobs}
+            estimates={estimates}
+            onClose={() => setDrawerLead(null)}
+            onUpdate={(patch) => handleUpdateLead(drawerLead.id, patch)}
+            onArchive={() => handleArchiveLead(drawerLead.id)}
+            onJumpToJob={(jobId) => {
+              setDrawerLead(null);
+              setTab("Jobs");
+            }}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {convertingLead && (
+          <ConvertLeadModal
+            key="convert-lead-modal"
+            lead={convertingLead}
+            onClose={() => setConvertingLead(null)}
+            onConvert={handleConvertWon}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {losingLead && (
+          <MarkLostModal
+            key="mark-lost-modal"
+            lead={losingLead}
+            onClose={() => setLosingLead(null)}
+            onMarkLost={handleMarkLost}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -7818,22 +7846,21 @@ function AddLeadModal({ onClose, onAdd }) {
   };
 
   return (
-    <AnimatePresence>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-        onClick={onClose}
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
       >
-        <motion.div
-          initial={{ scale: 0.95, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          exit={{ scale: 0.95, opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
-          onClick={(e) => e.stopPropagation()}
-        >
           <div className="p-5 border-b border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <UserPlus className="w-5 h-5 text-amber-400" />
@@ -7957,7 +7984,6 @@ function AddLeadModal({ onClose, onAdd }) {
           </div>
         </motion.div>
       </motion.div>
-    </AnimatePresence>
   );
 }
 
@@ -8012,22 +8038,21 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
   const days = daysSinceTouch(lead.last_touch_at);
 
   return (
-    <AnimatePresence>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
+      onClick={onClose}
+    >
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
-        onClick={onClose}
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        transition={{ type: "spring", stiffness: 320, damping: 32 }}
+        className="absolute right-0 top-0 bottom-0 w-full max-w-md bg-slate-900 border-l border-slate-800 shadow-2xl overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
       >
-        <motion.div
-          initial={{ x: "100%" }}
-          animate={{ x: 0 }}
-          exit={{ x: "100%" }}
-          transition={{ type: "spring", stiffness: 320, damping: 32 }}
-          className="absolute right-0 top-0 bottom-0 w-full max-w-md bg-slate-900 border-l border-slate-800 shadow-2xl overflow-y-auto"
-          onClick={(e) => e.stopPropagation()}
-        >
           {/* Header */}
           <div className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-5 py-4 flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
@@ -8172,15 +8197,18 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
             <Btn
               onClick={handleSave}
               disabled={!dirty}
-              className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              className={
+                dirty
+                  ? "inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/30"
+                  : "inline-flex items-center bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed"
+              }
             >
               <Save className="w-4 h-4 mr-1.5" />
-              Save Changes
+              {dirty ? "Save Changes" : "No Changes"}
             </Btn>
           </div>
         </motion.div>
       </motion.div>
-    </AnimatePresence>
   );
 }
 
@@ -8199,28 +8227,27 @@ function ConvertLeadModal({ lead, onClose, onConvert }) {
   };
 
   return (
-    <AnimatePresence>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-        onClick={onClose}
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="bg-slate-900 border border-emerald-900/40 rounded-2xl shadow-2xl shadow-emerald-500/10 w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
       >
-        <motion.div
-          initial={{ scale: 0.95, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          exit={{ scale: 0.95, opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="bg-slate-900 border border-emerald-900/40 rounded-2xl shadow-2xl shadow-emerald-500/10 w-full max-w-md"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="p-5 border-b border-slate-800 flex items-center gap-2">
-            <Trophy className="w-5 h-5 text-emerald-400" />
-            <h3 className="text-lg font-semibold text-white">Convert {lead.name} to Won?</h3>
-          </div>
+        <div className="p-5 border-b border-slate-800 flex items-center gap-2">
+          <Trophy className="w-5 h-5 text-emerald-400" />
+          <h3 className="text-lg font-semibold text-white">Convert {lead.name} to Won?</h3>
+        </div>
 
-          <div className="p-5 space-y-3">
+        <div className="p-5 space-y-3">
             <p className="text-sm text-slate-300">
               This will create a Client record. Optionally also create a Job to start tracking the build.
             </p>
@@ -8270,7 +8297,6 @@ function ConvertLeadModal({ lead, onClose, onConvert }) {
           </div>
         </motion.div>
       </motion.div>
-    </AnimatePresence>
   );
 }
 
@@ -8288,28 +8314,27 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
   };
 
   return (
-    <AnimatePresence>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-        onClick={onClose}
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="bg-slate-900 border border-rose-900/40 rounded-2xl shadow-2xl shadow-rose-500/10 w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
       >
-        <motion.div
-          initial={{ scale: 0.95, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          exit={{ scale: 0.95, opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="bg-slate-900 border border-rose-900/40 rounded-2xl shadow-2xl shadow-rose-500/10 w-full max-w-md"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="p-5 border-b border-slate-800 flex items-center gap-2">
-            <XCircle className="w-5 h-5 text-rose-400" />
-            <h3 className="text-lg font-semibold text-white">Mark {lead.name} as Lost?</h3>
-          </div>
+        <div className="p-5 border-b border-slate-800 flex items-center gap-2">
+          <XCircle className="w-5 h-5 text-rose-400" />
+          <h3 className="text-lg font-semibold text-white">Mark {lead.name} as Lost?</h3>
+        </div>
 
-          <div className="p-5 space-y-3">
+        <div className="p-5 space-y-3">
             <p className="text-sm text-slate-300">
               Capturing why you lost this one helps you spot patterns. Optional.
             </p>
@@ -8348,7 +8373,6 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
           </div>
         </motion.div>
       </motion.div>
-    </AnimatePresence>
   );
 }
 
