@@ -85,6 +85,22 @@ import { supabase } from "./supabase";
 //   - company_documents + company_document_events + company_document_shares
 //     tables required (see documents-vault-migration.sql)
 //   - Storage bucket "company-docs" (NOT public) required — see SQL footer
+// TOOL ROI DATABASE:
+//   - Top-level Tools tab — master tool inventory + ROI dashboard
+//   - Per-tool: brand, model #, serial #, purchase price, supplier,
+//     receipt photo, business-use %, depreciation method
+//   - Section 179 + MACRS 5/7-yr + bonus depreciation tracking
+//   - Per-tool ROI: total hours used × labor rate = earned revenue;
+//     (earned - cost) / cost = ROI %; "earning its keep" / "ghost tool" flags
+//   - Job-attribution: link tool uses to specific jobs for cost-per-job
+//   - Maintenance log w/ auto-reset on service; next_service_due alerts
+//   - Year-end tax report (CPA-ready Section 179 summary, total deductions)
+//   - Anti-ROI view: tools never used / underutilized / overdue service
+//   - Status: active / in_repair / lost / stolen / sold / retired
+//   - Soft delete (preserves tax history)
+//   - tools + tool_uses + tool_maintenance tables required
+//     (see tool-roi-migration.sql)
+//   - Storage bucket "tool-receipts" (NOT public) required
 // ================================================================
 
 // ================================================================
@@ -3159,6 +3175,1413 @@ function DocumentsVault({ documents, setDocuments }) {
 }
 
 // ================================================================
+// TOOL ROI DATABASE
+// Master inventory of every tool/equipment Northshore owns, with:
+// - Section 179 + MACRS depreciation tracking (CPA-ready)
+// - ROI per tool (earned revenue vs cost basis)
+// - Per-job usage attribution
+// - Maintenance log with service-due alerts
+// - Anti-ROI insights (ghost tools, underutilized, overdue service)
+// - Year-end tax report generator
+//
+// Architectural decisions worth knowing:
+// - business_use_pct enforces IRS >50% rule for Section 179 eligibility
+// - depreciation_method drives the tax math; UI surfaces method-specific fields
+// - tool_uses are attributable to jobs (or NULL = generic/shop use)
+// - "earned revenue" = sum(tool_uses.attributed_revenue) — recomputed cheap
+// - Soft delete preserves tax history (you NEED prior-year records for audits)
+// ================================================================
+
+const TOOL_CATEGORIES = [
+  { id: "Power",      label: "Power Tools",     color: "text-amber-400",   bg: "bg-amber-900/20",   border: "border-amber-700/40",  icon: Zap },
+  { id: "Hand",       label: "Hand Tools",      color: "text-blue-400",    bg: "bg-blue-900/20",    border: "border-blue-700/40",   icon: Hammer },
+  { id: "Pipe",       label: "Pipe / Plumbing", color: "text-cyan-400",    bg: "bg-cyan-900/20",    border: "border-cyan-700/40",   icon: Wrench },
+  { id: "Measuring",  label: "Measuring",       color: "text-purple-400",  bg: "bg-purple-900/20",  border: "border-purple-700/40", icon: Filter },
+  { id: "Safety",     label: "Safety / PPE",    color: "text-emerald-400", bg: "bg-emerald-900/20", border: "border-emerald-700/40", icon: ShieldCheck },
+  { id: "Vehicle",    label: "Vehicles",        color: "text-orange-400",  bg: "bg-orange-900/20",  border: "border-orange-700/40", icon: Truck },
+  { id: "Heavy",      label: "Heavy Equipment", color: "text-rose-400",    bg: "bg-rose-900/20",    border: "border-rose-700/40",   icon: HardHat },
+  { id: "Battery",    label: "Battery / Power", color: "text-yellow-400",  bg: "bg-yellow-900/20",  border: "border-yellow-700/40", icon: Zap },
+  { id: "Software",   label: "Software / Subs", color: "text-indigo-400",  bg: "bg-indigo-900/20",  border: "border-indigo-700/40", icon: FileText },
+  { id: "Other",      label: "Other",           color: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700",      icon: Package },
+];
+
+const getToolCategoryMeta = (id) =>
+  TOOL_CATEGORIES.find((c) => c.id === id) || TOOL_CATEGORIES[TOOL_CATEGORIES.length - 1];
+
+const TOOL_STATUSES = [
+  { id: "active",     label: "Active",     color: "text-emerald-400", bg: "bg-emerald-900/20", border: "border-emerald-700/40" },
+  { id: "in_repair",  label: "In Repair",  color: "text-amber-400",   bg: "bg-amber-900/20",   border: "border-amber-700/40" },
+  { id: "lost",       label: "Lost",       color: "text-rose-400",    bg: "bg-rose-900/20",    border: "border-rose-700/40" },
+  { id: "stolen",     label: "Stolen",     color: "text-rose-500",    bg: "bg-rose-900/30",    border: "border-rose-600/50" },
+  { id: "sold",       label: "Sold",       color: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700" },
+  { id: "retired",    label: "Retired",    color: "text-slate-500",   bg: "bg-slate-800/30",   border: "border-slate-700" },
+];
+
+const getToolStatusMeta = (id) =>
+  TOOL_STATUSES.find((s) => s.id === id) || TOOL_STATUSES[0];
+
+const DEPRECIATION_METHODS = [
+  { id: "section_179",  label: "Section 179",          desc: "Full deduction year 1 (Form 4562 Part I). Most tools." },
+  { id: "bonus_100",    label: "Bonus 100%",           desc: "100% bonus depreciation, post 1/19/2025. Like Sec 179 but no income limit." },
+  { id: "macrs_5yr",    label: "MACRS 5-Year",         desc: "Trucks, computers, most equipment. Spread across 5 yrs." },
+  { id: "macrs_7yr",    label: "MACRS 7-Year",         desc: "Office furniture, some heavy equipment." },
+  { id: "expense",      label: "Expensed",             desc: "Under de minimis threshold — pure expense, no depreciation." },
+  { id: "none",         label: "Personal / N/A",       desc: "Not depreciated. Used for personal-use tracking." },
+];
+
+// ================================================================
+// MACRS depreciation tables (half-year convention, declining balance)
+// Per IRS Pub 946 — Connor's CPA will reference these.
+// ================================================================
+const MACRS_5YR_RATES = [0.20, 0.32, 0.192, 0.1152, 0.1152, 0.0576];
+const MACRS_7YR_RATES = [0.1429, 0.2449, 0.1749, 0.1249, 0.0892, 0.0892, 0.0893, 0.0446];
+
+// Compute current-year and cumulative depreciation for a tool, given today's date.
+const computeToolDepreciation = (tool, asOfYear = new Date().getFullYear()) => {
+  const cost = Number(tool.purchase_price) || 0;
+  const usePct = (Number(tool.business_use_pct) || 0) / 100;
+  const basis = cost * usePct;
+  const placedYear = tool.placed_in_service_date
+    ? new Date(tool.placed_in_service_date).getFullYear()
+    : tool.purchase_date
+      ? new Date(tool.purchase_date).getFullYear()
+      : null;
+
+  if (!placedYear || basis <= 0) {
+    return { thisYear: 0, cumulative: 0, remaining: basis, methodLabel: "—", basisAfterBusinessUse: basis };
+  }
+
+  const yearsInService = Math.max(0, asOfYear - placedYear);
+  const method = tool.depreciation_method || "section_179";
+
+  if (method === "section_179" || method === "bonus_100" || method === "expense") {
+    const electedAmount = method === "section_179" && tool.section_179_amount != null
+      ? Math.min(Number(tool.section_179_amount), basis)
+      : basis;
+    if (yearsInService === 0) {
+      return {
+        thisYear: electedAmount,
+        cumulative: electedAmount,
+        remaining: basis - electedAmount,
+        methodLabel: method === "section_179" ? "Section 179" : method === "bonus_100" ? "Bonus 100%" : "Expensed",
+        basisAfterBusinessUse: basis,
+      };
+    }
+    return {
+      thisYear: 0,
+      cumulative: electedAmount,
+      remaining: basis - electedAmount,
+      methodLabel: method === "section_179" ? "Section 179" : method === "bonus_100" ? "Bonus 100%" : "Expensed",
+      basisAfterBusinessUse: basis,
+    };
+  }
+
+  if (method === "macrs_5yr" || method === "macrs_7yr") {
+    const table = method === "macrs_5yr" ? MACRS_5YR_RATES : MACRS_7YR_RATES;
+    let cumulative = 0;
+    let thisYear = 0;
+    for (let i = 0; i < table.length; i++) {
+      const yearAmount = basis * table[i];
+      if (i < yearsInService) cumulative += yearAmount;
+      if (i === yearsInService) thisYear = yearAmount;
+    }
+    return {
+      thisYear,
+      cumulative: cumulative + thisYear,
+      remaining: Math.max(0, basis - cumulative - thisYear),
+      methodLabel: method === "macrs_5yr" ? "MACRS 5-yr" : "MACRS 7-yr",
+      basisAfterBusinessUse: basis,
+    };
+  }
+
+  return { thisYear: 0, cumulative: 0, remaining: basis, methodLabel: "—", basisAfterBusinessUse: basis };
+};
+
+// Compute ROI metrics for a tool given its uses.
+const computeToolROI = (tool, toolUses, settings) => {
+  const cost = Number(tool.purchase_price) || 0;
+  const uses = toolUses.filter((u) => u.tool_id === tool.id);
+  const totalHours = uses.reduce((s, u) => s + (Number(u.hours_used) || 0), 0);
+  const earnedRevenue = uses.reduce((s, u) => {
+    if (u.attributed_revenue != null) return s + Number(u.attributed_revenue);
+    return s + ((Number(u.hours_used) || 0) * (Number(settings?.laborRate) || 95));
+  }, 0);
+  const roi = cost > 0 ? ((earnedRevenue - cost) / cost) * 100 : null;
+  const jobsTouched = new Set(uses.filter((u) => u.job_id).map((u) => u.job_id)).size;
+  return {
+    totalHours,
+    earnedRevenue,
+    roi,
+    netGain: earnedRevenue - cost,
+    jobsTouched,
+    useCount: uses.length,
+  };
+};
+
+
+// ================================================================
+// TOOL UPLOAD / EDIT MODAL — full CRUD form for tools
+// ================================================================
+function ToolFormModal({ isOpen, existingTool, onClose, onSaved }) {
+  const toast = useToast();
+  const [name, setName]                 = useState("");
+  const [brand, setBrand]               = useState("");
+  const [modelNumber, setModelNumber]   = useState("");
+  const [serialNumber, setSerialNumber] = useState("");
+  const [category, setCategory]         = useState("Power");
+  const [purchaseDate, setPurchaseDate] = useState("");
+  const [purchasePrice, setPurchasePrice] = useState("");
+  const [salesTax, setSalesTax]         = useState("");
+  const [supplier, setSupplier]         = useState("");
+  const [businessUsePct, setBusinessUsePct] = useState(100);
+  const [depreciationMethod, setDepreciationMethod] = useState("section_179");
+  const [placedInService, setPlacedInService] = useState("");
+  const [warrantyExpires, setWarrantyExpires] = useState("");
+  const [serviceIntervalHours, setServiceIntervalHours] = useState("");
+  const [currentLocation, setCurrentLocation] = useState("");
+  const [tags, setTags]                 = useState("");
+  const [notes, setNotes]               = useState("");
+  const [receiptFile, setReceiptFile]   = useState(null);
+  const [saving, setSaving]             = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (existingTool) {
+      setName(existingTool.name || "");
+      setBrand(existingTool.brand || "");
+      setModelNumber(existingTool.model_number || "");
+      setSerialNumber(existingTool.serial_number || "");
+      setCategory(existingTool.category || "Power");
+      setPurchaseDate(existingTool.purchase_date || "");
+      setPurchasePrice(existingTool.purchase_price ?? "");
+      setSalesTax(existingTool.sales_tax_paid ?? "");
+      setSupplier(existingTool.supplier || "");
+      setBusinessUsePct(existingTool.business_use_pct ?? 100);
+      setDepreciationMethod(existingTool.depreciation_method || "section_179");
+      setPlacedInService(existingTool.placed_in_service_date || existingTool.purchase_date || "");
+      setWarrantyExpires(existingTool.warranty_expires_at || "");
+      setServiceIntervalHours(existingTool.service_interval_hours ?? "");
+      setCurrentLocation(existingTool.current_location || "");
+      setTags((existingTool.tags || []).join(", "));
+      setNotes(existingTool.notes || "");
+    } else {
+      setName(""); setBrand(""); setModelNumber(""); setSerialNumber("");
+      setCategory("Power"); setPurchaseDate(""); setPurchasePrice(""); setSalesTax("");
+      setSupplier(""); setBusinessUsePct(100); setDepreciationMethod("section_179");
+      setPlacedInService(""); setWarrantyExpires(""); setServiceIntervalHours("");
+      setCurrentLocation(""); setTags(""); setNotes("");
+    }
+    setReceiptFile(null);
+  }, [isOpen, existingTool]);
+
+  const methodMeta = DEPRECIATION_METHODS.find((m) => m.id === depreciationMethod);
+
+  const handleSave = async () => {
+    if (!name.trim()) { toast.error("Tool name is required"); return; }
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) throw new Error("Not signed in");
+
+      let receiptPath = existingTool?.receipt_storage_path || null;
+
+      if (receiptFile) {
+        if (receiptFile.size > 25 * 1024 * 1024) {
+          throw new Error("Receipt over 25MB. Compress first.");
+        }
+        const safeName = receiptFile.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+        const path = `receipts/${Date.now()}-${safeName}`;
+        const { error: upErr } = await supabase.storage
+          .from("tool-receipts")
+          .upload(path, receiptFile, { contentType: receiptFile.type, upsert: false });
+        if (upErr) throw upErr;
+        receiptPath = path;
+      }
+
+      const tagArray = tags.split(",").map((t) => t.trim()).filter(Boolean);
+      const payload = {
+        name: name.trim(),
+        brand: brand.trim() || null,
+        model_number: modelNumber.trim() || null,
+        serial_number: serialNumber.trim() || null,
+        category,
+        purchase_date: purchaseDate || null,
+        purchase_price: purchasePrice === "" ? 0 : Number(purchasePrice),
+        sales_tax_paid: salesTax === "" ? 0 : Number(salesTax),
+        supplier: supplier.trim() || null,
+        receipt_storage_path: receiptPath,
+        business_use_pct: Number(businessUsePct) || 100,
+        depreciation_method: depreciationMethod,
+        recovery_period_years: depreciationMethod === "macrs_5yr" ? 5 :
+                               depreciationMethod === "macrs_7yr" ? 7 : null,
+        placed_in_service_date: placedInService || purchaseDate || null,
+        warranty_expires_at: warrantyExpires || null,
+        service_interval_hours: serviceIntervalHours === "" ? null : Number(serviceIntervalHours),
+        current_location: currentLocation.trim() || null,
+        tags: tagArray,
+        notes: notes.trim() || null,
+      };
+
+      let result;
+      if (existingTool) {
+        const { data, error } = await supabase
+          .from("tools")
+          .update(payload)
+          .eq("id", existingTool.id)
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      } else {
+        const { data, error } = await supabase
+          .from("tools")
+          .insert({
+            ...payload,
+            status: "active",
+            created_by: session.user.id,
+            created_by_email: session.user.email,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+      }
+      onSaved(result, !!existingTool);
+      toast.success(existingTool ? "Tool updated" : "Tool added to inventory");
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4 py-8 overflow-y-auto"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-2xl w-full p-6 my-auto"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Wrench className="w-5 h-5 text-amber-400" />
+              {existingTool ? `Edit: ${existingTool.name}` : "Add Tool to Inventory"}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              {existingTool
+                ? "Update tool details. Changes preserve all usage and maintenance history."
+                : "Track every tool with cost basis, depreciation method, and ROI metrics."}
+            </p>
+
+            <div className="space-y-3 mb-4">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Identification</p>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Tool Name *</label>
+                <Inp placeholder="e.g. M18 FUEL Hammer Drill" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Brand</label>
+                  <Inp placeholder="Milwaukee" value={brand} onChange={(e) => setBrand(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Model #</label>
+                  <Inp placeholder="2904-20" value={modelNumber} onChange={(e) => setModelNumber(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Serial #</label>
+                  <Inp placeholder="optional" value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Category</label>
+                <Sel value={category} onChange={(e) => setCategory(e.target.value)}>
+                  {TOOL_CATEGORIES.map((c) => (
+                    <option key={c.id} value={c.id}>{c.label}</option>
+                  ))}
+                </Sel>
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-4 pt-3 border-t border-slate-800">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Acquisition</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Purchase Date</label>
+                  <Inp type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Cost ($)</label>
+                  <Inp type="number" step="0.01" placeholder="0.00" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Sales Tax ($)</label>
+                  <Inp type="number" step="0.01" placeholder="0.00" value={salesTax} onChange={(e) => setSalesTax(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Supplier</label>
+                <Inp placeholder="Home Depot, Menards, Acme Tools, etc." value={supplier} onChange={(e) => setSupplier(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Receipt Photo / PDF</label>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
+                  className="block w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-400 file:text-black hover:file:bg-amber-500 file:cursor-pointer cursor-pointer"
+                />
+                {receiptFile && (<p className="text-[10px] text-emerald-400 mt-1">Will upload: {receiptFile.name}</p>)}
+                {existingTool?.receipt_storage_path && !receiptFile && (
+                  <p className="text-[10px] text-slate-500 mt-1">Existing receipt on file. Pick a new file to replace.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-4 pt-3 border-t border-slate-800">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Tax & Depreciation</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">
+                    Business Use % <span className="text-slate-600">(IRS requires {">"}50% for §179)</span>
+                  </label>
+                  <Inp type="number" min={0} max={100} value={businessUsePct} onChange={(e) => setBusinessUsePct(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Placed In Service</label>
+                  <Inp type="date" value={placedInService} onChange={(e) => setPlacedInService(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Depreciation Method</label>
+                <Sel value={depreciationMethod} onChange={(e) => setDepreciationMethod(e.target.value)}>
+                  {DEPRECIATION_METHODS.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </Sel>
+                {methodMeta && (<p className="text-[10px] text-slate-500 mt-1">{methodMeta.desc}</p>)}
+              </div>
+              {Number(businessUsePct) <= 50 && (
+                <div className="px-3 py-2 rounded-lg bg-rose-900/20 border border-rose-800/50 text-xs text-rose-300 flex items-center gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Business use ≤ 50% disqualifies this tool from Section 179. Use MACRS or expense.</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3 mb-4 pt-3 border-t border-slate-800">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Operational</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Current Location</label>
+                  <Inp placeholder="Truck 1, Garage, Job site..." value={currentLocation} onChange={(e) => setCurrentLocation(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Warranty Expires</label>
+                  <Inp type="date" value={warrantyExpires} onChange={(e) => setWarrantyExpires(e.target.value)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Service Interval (hrs) <span className="text-slate-600 ml-1">optional</span></label>
+                  <Inp type="number" min={0} placeholder="50" value={serviceIntervalHours} onChange={(e) => setServiceIntervalHours(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Tags</label>
+                  <Inp placeholder="comma-separated: heavy, truck-1, primary" value={tags} onChange={(e) => setTags(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Anything to remember about this tool..." className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">Cancel</button>
+              <button onClick={handleSave} disabled={saving || !name.trim()} className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Saving...</>) : (<><Save className="w-4 h-4" /> {existingTool ? "Save Changes" : "Add Tool"}</>)}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+
+// ================================================================
+// LOG TOOL USE MODAL
+// ================================================================
+function ToolUseModal({ isOpen, tool, jobs, settings, onClose, onSaved }) {
+  const toast = useToast();
+  const [jobId, setJobId]         = useState("");
+  const [usedDate, setUsedDate]   = useState(new Date().toISOString().slice(0, 10));
+  const [hoursUsed, setHoursUsed] = useState("");
+  const [notes, setNotes]         = useState("");
+  const [saving, setSaving]       = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setJobId(""); setUsedDate(new Date().toISOString().slice(0, 10));
+      setHoursUsed(""); setNotes("");
+    }
+  }, [isOpen]);
+
+  const activeJobs = jobs.filter((j) => j.status === "Active");
+  const laborRate = Number(settings?.laborRate) || 95;
+  const attributedRevenue = hoursUsed ? Number(hoursUsed) * laborRate : 0;
+
+  const handleSave = async () => {
+    if (!hoursUsed || Number(hoursUsed) <= 0) { toast.error("Hours used is required"); return; }
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data, error } = await supabase
+        .from("tool_uses")
+        .insert({
+          tool_id: tool.id,
+          job_id: jobId || null,
+          used_date: usedDate,
+          hours_used: Number(hoursUsed),
+          attributed_revenue: attributedRevenue,
+          notes: notes.trim() || null,
+          user_id: session?.user?.id,
+          user_email: session?.user?.email,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      onSaved(data);
+      toast.success(`Logged ${hoursUsed}h on ${tool.name}`);
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-amber-400" /> Log Tool Use
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">{tool.name}</p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Job <span className="text-slate-600">(optional — leave blank for shop / generic use)</span></label>
+                <Sel value={jobId} onChange={(e) => setJobId(e.target.value)}>
+                  <option value="">— Generic use (shop, training) —</option>
+                  {activeJobs.map((j) => (<option key={j.id} value={j.id}>{j.name}</option>))}
+                </Sel>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Date</label>
+                  <Inp type="date" value={usedDate} onChange={(e) => setUsedDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Hours Used</label>
+                  <Inp type="number" step="0.25" placeholder="2.5" value={hoursUsed} onChange={(e) => setHoursUsed(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="What you did with it..." className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+              </div>
+              {hoursUsed && Number(hoursUsed) > 0 && (
+                <div className="px-3 py-2 rounded-lg bg-emerald-900/20 border border-emerald-800/50 text-xs text-emerald-300 flex items-center justify-between">
+                  <span>Attributed revenue ({hoursUsed}h × {currency(laborRate)}/hr)</span>
+                  <span className="font-semibold">{currency(attributedRevenue)}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">Cancel</button>
+              <button onClick={handleSave} disabled={saving || !hoursUsed} className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? "Saving..." : "Log Use"}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ================================================================
+// MAINTENANCE LOG MODAL
+// ================================================================
+function ToolMaintenanceModal({ isOpen, tool, onClose, onSaved }) {
+  const toast = useToast();
+  const [serviceDate, setServiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [serviceType, setServiceType] = useState("routine");
+  const [description, setDescription] = useState("");
+  const [cost, setCost]               = useState("");
+  const [performedBy, setPerformedBy] = useState("Self");
+  const [nextDue, setNextDue]         = useState("");
+  const [notes, setNotes]             = useState("");
+  const [saving, setSaving]           = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setServiceDate(new Date().toISOString().slice(0, 10));
+      setServiceType("routine"); setDescription(""); setCost("");
+      setPerformedBy("Self"); setNextDue(""); setNotes("");
+    }
+  }, [isOpen]);
+
+  const handleSave = async () => {
+    if (!description.trim()) { toast.error("Description is required"); return; }
+    setSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data, error } = await supabase
+        .from("tool_maintenance")
+        .insert({
+          tool_id: tool.id,
+          service_date: serviceDate,
+          service_type: serviceType,
+          description: description.trim(),
+          cost: cost === "" ? 0 : Number(cost),
+          performed_by: performedBy.trim() || null,
+          next_service_due: nextDue || null,
+          notes: notes.trim() || null,
+          user_id: session?.user?.id,
+          user_email: session?.user?.email,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      onSaved(data);
+      toast.success("Service logged. Hours-since-service reset.");
+    } catch (err) {
+      toast.error("Save failed: " + (err.message || "Unknown"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[999] flex items-center justify-center px-4"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 8 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-2 border-slate-700 rounded-xl shadow-2xl max-w-md w-full p-6"
+          >
+            <h3 className="text-lg font-bold text-slate-100 mb-1 flex items-center gap-2">
+              <Wrench className="w-5 h-5 text-amber-400" /> Log Maintenance
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">{tool.name}</p>
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Service Date</label>
+                  <Inp type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Type</label>
+                  <Sel value={serviceType} onChange={(e) => setServiceType(e.target.value)}>
+                    <option value="routine">Routine</option>
+                    <option value="repair">Repair</option>
+                    <option value="replacement">Replacement</option>
+                    <option value="inspection">Inspection</option>
+                  </Sel>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Description *</label>
+                <Inp placeholder="Blade change, oil/filter, recharge cells..." value={description} onChange={(e) => setDescription(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Cost ($)</label>
+                  <Inp type="number" step="0.01" placeholder="0.00" value={cost} onChange={(e) => setCost(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Performed By</label>
+                  <Inp value={performedBy} onChange={(e) => setPerformedBy(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Next Service Due <span className="text-slate-600">(optional)</span></label>
+                <Inp type="date" value={nextDue} onChange={(e) => setNextDue(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Notes</label>
+                <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors">Cancel</button>
+              <button onClick={handleSave} disabled={saving || !description.trim()} className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? "Saving..." : "Log Service"}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+
+// ================================================================
+// TOOL DETAIL DRAWER
+// ================================================================
+function ToolDetailDrawer({ tool, toolUses, toolMaintenance, jobs, settings, onClose, onUpdated, onDeleted }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [useModalOpen, setUseModalOpen] = useState(false);
+  const [maintModalOpen, setMaintModalOpen] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [receiptUrl, setReceiptUrl] = useState(null);
+
+  useEffect(() => {
+    if (!tool?.receipt_storage_path) { setReceiptUrl(null); return; }
+    let alive = true;
+    (async () => {
+      const { data } = await supabase.storage
+        .from("tool-receipts")
+        .createSignedUrl(tool.receipt_storage_path, 60);
+      if (alive && data) setReceiptUrl(data.signedUrl);
+    })();
+    return () => { alive = false; };
+  }, [tool?.id, tool?.receipt_storage_path]);
+
+  if (!tool) return null;
+
+  const meta = getToolCategoryMeta(tool.category);
+  const Icon = meta.icon;
+  const dep = computeToolDepreciation(tool);
+  const roi = computeToolROI(tool, toolUses, settings);
+  const myUses = toolUses.filter((u) => u.tool_id === tool.id).slice(0, 50);
+  const myMaint = toolMaintenance.filter((m) => m.tool_id === tool.id).slice(0, 50);
+  const serviceDueDays = tool.next_service_due ? daysUntil(tool.next_service_due) : null;
+  const warrantyDays = tool.warranty_expires_at ? daysUntil(tool.warranty_expires_at) : null;
+
+  const updateStatus = async (newStatus) => {
+    const { data, error } = await supabase
+      .from("tools")
+      .update({ status: newStatus })
+      .eq("id", tool.id)
+      .select()
+      .single();
+    if (!error && data) {
+      onUpdated(data);
+      toast.success(`Status updated to ${getToolStatusMeta(newStatus).label}`);
+    }
+  };
+
+  const handleDelete = async () => {
+    const ok = await confirm({
+      title: "Archive this tool?",
+      message: "Tool will be hidden from the inventory but tax history, usage logs, and maintenance records are preserved (required for IRS audits).",
+      confirmText: "Archive",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase
+      .from("tools")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", tool.id);
+    if (!error) {
+      onDeleted(tool.id);
+      toast.success("Tool archived");
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[998] flex items-stretch justify-end"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-slate-900 border-l-2 border-slate-700 w-full max-w-xl overflow-y-auto"
+        >
+          <div className={`${meta.bg} ${meta.border} border-b px-5 py-4`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0 flex-1">
+                <Icon className={`w-7 h-7 ${meta.color} shrink-0 mt-0.5`} />
+                <div className="min-w-0">
+                  <h3 className="text-base font-bold text-slate-100 break-words">{tool.name}</h3>
+                  <p className={`text-xs ${meta.color}`}>
+                    {meta.label}
+                    {tool.brand && ` • ${tool.brand}`}
+                    {tool.model_number && ` ${tool.model_number}`}
+                  </p>
+                </div>
+              </div>
+              <button onClick={onClose} className="text-slate-400 hover:text-white shrink-0 p-1">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {TOOL_STATUSES.slice(0, 3).map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => updateStatus(s.id)}
+                  className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors ${
+                    tool.status === s.id ? `${s.bg} ${s.color} ${s.border}` : "bg-slate-900 text-slate-500 border-slate-700 hover:bg-slate-800"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+              <Sel value={tool.status} onChange={(e) => updateStatus(e.target.value)} className="text-[10px] py-1 px-2 w-auto">
+                {TOOL_STATUSES.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
+              </Sel>
+            </div>
+          </div>
+
+          <div className="p-5 space-y-4">
+            {(serviceDueDays !== null && serviceDueDays <= 14) && (
+              <div className={`rounded-lg border px-3 py-2 text-sm flex items-center gap-2 ${
+                serviceDueDays < 0 ? "bg-rose-900/30 border-rose-700/50 text-rose-200" : "bg-amber-900/30 border-amber-700/50 text-amber-200"
+              }`}>
+                <Wrench className="w-4 h-4 shrink-0" />
+                <span>
+                  {serviceDueDays < 0
+                    ? `Service overdue by ${Math.abs(serviceDueDays)} day${Math.abs(serviceDueDays) === 1 ? "" : "s"}`
+                    : `Service due in ${serviceDueDays} day${serviceDueDays === 1 ? "" : "s"}`}
+                </span>
+              </div>
+            )}
+            {tool.service_interval_hours && tool.hours_since_service >= tool.service_interval_hours && (
+              <div className="rounded-lg border bg-rose-900/30 border-rose-700/50 text-rose-200 px-3 py-2 text-sm flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>Service threshold reached: {Number(tool.hours_since_service).toFixed(1)}h since last service (interval: {tool.service_interval_hours}h)</span>
+              </div>
+            )}
+            {warrantyDays !== null && warrantyDays >= 0 && warrantyDays <= 30 && (
+              <div className="rounded-lg border bg-blue-900/30 border-blue-700/50 text-blue-200 px-3 py-2 text-sm flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 shrink-0" />
+                <span>Warranty expires in {warrantyDays} day{warrantyDays === 1 ? "" : "s"}</span>
+              </div>
+            )}
+
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <TrendingUp className="w-4 h-4 text-emerald-400" />
+                  <p className="text-xs uppercase tracking-wider text-slate-500">ROI Performance</p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Total Hours</p>
+                    <p className="text-xl font-bold text-slate-100 tabular-nums">{roi.totalHours.toFixed(1)}h</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">{roi.useCount} session{roi.useCount === 1 ? "" : "s"}</p>
+                  </div>
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Earned Revenue</p>
+                    <p className="text-xl font-bold text-emerald-400 tabular-nums">{currency(roi.earnedRevenue)}</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">across {roi.jobsTouched} job{roi.jobsTouched === 1 ? "" : "s"}</p>
+                  </div>
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Cost Basis</p>
+                    <p className="text-xl font-bold text-slate-300 tabular-nums">{currency(tool.purchase_price)}</p>
+                    {tool.sales_tax_paid > 0 && (<p className="text-[10px] text-slate-600 mt-0.5">+ {currency(tool.sales_tax_paid)} tax</p>)}
+                  </div>
+                  <div className={`bg-slate-950/60 border rounded-lg p-3 ${roi.roi != null && roi.roi >= 0 ? "border-emerald-800/50" : "border-rose-800/50"}`}>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">ROI</p>
+                    <p className={`text-xl font-bold tabular-nums ${
+                      roi.roi == null ? "text-slate-500" : roi.roi >= 100 ? "text-emerald-400" : roi.roi >= 0 ? "text-amber-400" : "text-rose-400"
+                    }`}>
+                      {roi.roi == null ? "—" : `${roi.roi >= 0 ? "+" : ""}${roi.roi.toFixed(0)}%`}
+                    </p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">{roi.netGain >= 0 ? "+" : ""}{currency(roi.netGain)} net</p>
+                  </div>
+                </div>
+
+                {roi.useCount > 0 && (
+                  <div className={`mt-3 px-3 py-2 rounded-lg text-xs flex items-center gap-2 ${
+                    roi.roi >= 100 ? 'bg-emerald-900/20 border border-emerald-800/40 text-emerald-300' :
+                    roi.roi >= 0 ? 'bg-amber-900/20 border border-amber-800/40 text-amber-300' :
+                    'bg-rose-900/20 border border-rose-800/40 text-rose-300'
+                  }`}>
+                    {roi.roi >= 100 ? (
+                      <><CheckCircle2 className="w-3.5 h-3.5" /> Earning its keep — paid for itself {(roi.roi / 100).toFixed(1)}× over.</>
+                    ) : roi.roi >= 0 ? (
+                      <><Info className="w-3.5 h-3.5" /> Recouping cost — {(100 - roi.roi).toFixed(0)}% to break even.</>
+                    ) : (
+                      <><AlertTriangle className="w-3.5 h-3.5" /> Below cost basis — needs more job hours.</>
+                    )}
+                  </div>
+                )}
+                {roi.useCount === 0 && (
+                  <div className="mt-3 px-3 py-2 rounded-lg text-xs bg-slate-800/40 border border-slate-700 text-slate-400 flex items-center gap-2">
+                    <AlertCircle className="w-3.5 h-3.5" /> Ghost tool — not yet used on any job.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <DollarSign className="w-4 h-4 text-amber-400" />
+                  <p className="text-xs uppercase tracking-wider text-slate-500">Tax Treatment</p>
+                </div>
+                <div className="space-y-1.5 text-xs">
+                  <div className="flex justify-between"><span className="text-slate-500">Method</span><span className="text-slate-200">{dep.methodLabel}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Cost basis</span><span className="text-slate-200">{currency(tool.purchase_price)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Business use</span><span className="text-slate-200">{tool.business_use_pct}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Deductible basis</span><span className="text-slate-200">{currency(dep.basisAfterBusinessUse)}</span></div>
+                  <div className="flex justify-between font-semibold pt-1 border-t border-slate-800"><span className="text-slate-400">This year deduction</span><span className="text-emerald-400">{currency(dep.thisYear)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Cumulative deducted</span><span className="text-slate-300">{currency(dep.cumulative)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Remaining basis</span><span className="text-slate-300">{currency(dep.remaining)}</span></div>
+                </div>
+                {tool.business_use_pct <= 50 && (tool.depreciation_method === "section_179" || tool.depreciation_method === "bonus_100") && (
+                  <div className="mt-3 px-3 py-2 rounded-lg bg-rose-900/20 border border-rose-800/50 text-xs text-rose-300 flex items-center gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    Business use ≤ 50% — IRS disallows §179/Bonus. Switch to MACRS.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-slate-500" />
+                    <p className="text-xs uppercase tracking-wider text-slate-500">Usage History ({myUses.length})</p>
+                  </div>
+                  <button onClick={() => setUseModalOpen(true)} className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 transition-colors">
+                    <Plus className="w-3 h-3" /> Log Use
+                  </button>
+                </div>
+                {myUses.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-3">No usage logged yet.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                    {myUses.map((u) => {
+                      const job = jobs.find((j) => j.id === u.job_id);
+                      return (
+                        <div key={u.id} className="flex items-center gap-2 px-2 py-1.5 rounded bg-slate-800/40 text-xs">
+                          <span className="text-slate-400 shrink-0">{new Date(u.used_date).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+                          <span className="text-amber-400 font-mono shrink-0">{Number(u.hours_used).toFixed(1)}h</span>
+                          <span className="text-slate-300 truncate flex-1">{job?.name || <span className="text-slate-600 italic">generic use</span>}</span>
+                          {u.attributed_revenue > 0 && (<span className="text-emerald-400 shrink-0">{currency(u.attributed_revenue)}</span>)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Wrench className="w-4 h-4 text-slate-500" />
+                    <p className="text-xs uppercase tracking-wider text-slate-500">Maintenance ({myMaint.length})</p>
+                  </div>
+                  <button onClick={() => setMaintModalOpen(true)} className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 transition-colors">
+                    <Plus className="w-3 h-3" /> Log Service
+                  </button>
+                </div>
+                {myMaint.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-3">No maintenance logged.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                    {myMaint.map((m) => (
+                      <div key={m.id} className="px-2 py-1.5 rounded bg-slate-800/40 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400 shrink-0">{new Date(m.service_date).toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" })}</span>
+                          <span className="text-slate-200 truncate flex-1">{m.description}</span>
+                          {m.cost > 0 && <span className="text-rose-400 shrink-0">{currency(m.cost)}</span>}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-0.5 ml-2">{m.service_type} • {m.performed_by || "—"}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4 text-xs space-y-1.5">
+                {tool.serial_number && (<div className="flex justify-between"><span className="text-slate-500">Serial</span><span className="text-slate-300 font-mono">{tool.serial_number}</span></div>)}
+                {tool.supplier && (<div className="flex justify-between"><span className="text-slate-500">Supplier</span><span className="text-slate-300">{tool.supplier}</span></div>)}
+                {tool.current_location && (<div className="flex justify-between"><span className="text-slate-500">Location</span><span className="text-slate-300">{tool.current_location}</span></div>)}
+                {tool.warranty_expires_at && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Warranty</span>
+                    <span className={warrantyDays != null && warrantyDays < 0 ? "text-rose-400" : "text-slate-300"}>
+                      {new Date(tool.warranty_expires_at).toLocaleDateString([], { dateStyle: "medium" })}
+                    </span>
+                  </div>
+                )}
+                {tool.tags?.length > 0 && (
+                  <div className="pt-1.5">
+                    <span className="text-slate-500 text-[10px]">TAGS</span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {tool.tags.map((t) => (<span key={t} className="px-1.5 py-0.5 text-[9px] bg-slate-800 text-slate-400 rounded">{t}</span>))}
+                    </div>
+                  </div>
+                )}
+                {tool.notes && (<div className="pt-1.5 border-t border-slate-800 mt-2"><p className="text-slate-300 whitespace-pre-wrap">{tool.notes}</p></div>)}
+                {receiptUrl && (
+                  <a href={receiptUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 mt-2">
+                    <FileText className="w-3.5 h-3.5" /> View Receipt
+                  </a>
+                )}
+              </CardContent>
+            </Card>
+
+            <div className="flex gap-2">
+              <button onClick={() => setEditModalOpen(true)} className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1.5">
+                <Pencil className="w-3.5 h-3.5" /> Edit
+              </button>
+              <button onClick={handleDelete} className="ml-auto px-3 py-2 rounded-lg text-xs font-semibold bg-rose-900/30 text-rose-300 hover:bg-rose-900/50 border border-rose-800/50 transition-colors flex items-center gap-1.5">
+                <Trash2 className="w-3.5 h-3.5" /> Archive
+              </button>
+            </div>
+          </div>
+
+          <ToolUseModal isOpen={useModalOpen} tool={tool} jobs={jobs} settings={settings} onClose={() => setUseModalOpen(false)} onSaved={(newUse) => { onUpdated({ ...tool, _newUse: newUse }); setUseModalOpen(false); }} />
+          <ToolMaintenanceModal isOpen={maintModalOpen} tool={tool} onClose={() => setMaintModalOpen(false)} onSaved={(newMaint) => { onUpdated({ ...tool, _newMaint: newMaint }); setMaintModalOpen(false); }} />
+          <ToolFormModal isOpen={editModalOpen} existingTool={tool} onClose={() => setEditModalOpen(false)} onSaved={(updated) => { onUpdated(updated); setEditModalOpen(false); }} />
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+
+// ================================================================
+// TOOL ROI DATABASE — top-level Tools tab
+// ================================================================
+function ToolsROI({ tools, setTools, toolUses, setToolUses, toolMaintenance, setToolMaintenance, jobs, settings }) {
+  const [search, setSearch]                 = useState("");
+  const [filterCategory, setFilterCategory] = useState("All");
+  const [filterStatus, setFilterStatus]     = useState("active");
+  const [sortBy, setSortBy]                 = useState("recent");
+  const [showArchived, setShowArchived]     = useState(false);
+  const [formModalOpen, setFormModalOpen]   = useState(false);
+  const [detailTool, setDetailTool]         = useState(null);
+  const [showTaxReport, setShowTaxReport]   = useState(false);
+
+  const visible = tools.filter((t) => {
+    if (!showArchived && t.deleted_at) return false;
+    if (showArchived && !t.deleted_at) return false;
+    if (filterCategory !== "All" && t.category !== filterCategory) return false;
+    if (filterStatus !== "All" && t.status !== filterStatus) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      const hay = [t.name, t.brand, t.model_number, t.serial_number, t.supplier, t.notes, ...(t.tags || [])]
+        .filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const sorted = [...visible].sort((a, b) => {
+    if (sortBy === "recent") return new Date(b.created_at) - new Date(a.created_at);
+    if (sortBy === "cost") return (Number(b.purchase_price) || 0) - (Number(a.purchase_price) || 0);
+    const aRoi = computeToolROI(a, toolUses, settings);
+    const bRoi = computeToolROI(b, toolUses, settings);
+    if (sortBy === "roi") return (bRoi.roi ?? -Infinity) - (aRoi.roi ?? -Infinity);
+    if (sortBy === "hours") return bRoi.totalHours - aRoi.totalHours;
+    return 0;
+  });
+
+  const activeTools = tools.filter((t) => !t.deleted_at);
+  const totalCostBasis = activeTools.reduce((s, t) => s + (Number(t.purchase_price) || 0), 0);
+  const totalEarnedRevenue = activeTools.reduce((s, t) => s + computeToolROI(t, toolUses, settings).earnedRevenue, 0);
+  const totalNetGain = totalEarnedRevenue - totalCostBasis;
+  const fleetROI = totalCostBasis > 0 ? ((totalEarnedRevenue - totalCostBasis) / totalCostBasis) * 100 : null;
+  const ghostTools = activeTools.filter((t) => {
+    const r = computeToolROI(t, toolUses, settings);
+    return r.useCount === 0 && (Number(t.purchase_price) || 0) > 0;
+  });
+  const overdueService = activeTools.filter((t) => {
+    if (!t.next_service_due) return false;
+    return daysUntil(t.next_service_due) < 0;
+  });
+
+  const currentYear = new Date().getFullYear();
+  const taxSummary = activeTools.reduce((acc, t) => {
+    const dep = computeToolDepreciation(t, currentYear);
+    if (dep.thisYear > 0) {
+      acc.totalDeduction += dep.thisYear;
+      acc.byMethod[dep.methodLabel] = (acc.byMethod[dep.methodLabel] || 0) + dep.thisYear;
+      acc.tools.push({ tool: t, dep });
+    }
+    return acc;
+  }, { totalDeduction: 0, byMethod: {}, tools: [] });
+
+  const handleSaved = (saved, isEdit) => {
+    setFormModalOpen(false);
+    if (isEdit) {
+      setTools((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
+    } else {
+      setTools((prev) => [saved, ...prev]);
+    }
+    setDetailTool(saved);
+  };
+
+  const handleUpdated = async (updated) => {
+    if (updated._newUse) {
+      setToolUses((prev) => [updated._newUse, ...prev]);
+      const { data } = await supabase.from("tools").select("*").eq("id", updated.id).single();
+      if (data) {
+        setTools((prev) => prev.map((t) => (t.id === data.id ? data : t)));
+        setDetailTool(data);
+      }
+    } else if (updated._newMaint) {
+      setToolMaintenance((prev) => [updated._newMaint, ...prev]);
+      const { data } = await supabase.from("tools").select("*").eq("id", updated.id).single();
+      if (data) {
+        setTools((prev) => prev.map((t) => (t.id === data.id ? data : t)));
+        setDetailTool(data);
+      }
+    } else {
+      setTools((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      setDetailTool(updated);
+    }
+  };
+
+  const handleDeleted = (id) => {
+    setTools((prev) => prev.map((t) => (t.id === id ? { ...t, deleted_at: new Date().toISOString() } : t)));
+    setDetailTool(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
+            <Wrench className="w-6 h-6 text-amber-400" />
+            Tool & Equipment ROI
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {activeTools.length} active tool{activeTools.length === 1 ? "" : "s"}
+            {ghostTools.length > 0 && (<span className="text-amber-400 ml-2">• {ghostTools.length} unused</span>)}
+            {overdueService.length > 0 && (<span className="text-rose-400 ml-2">• {overdueService.length} service overdue</span>)}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowTaxReport(!showTaxReport)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-colors flex items-center gap-1.5"
+          >
+            <DollarSign className="w-3.5 h-3.5" /> {showTaxReport ? "Hide" : "Tax Report"}
+          </button>
+          <button
+            onClick={() => setShowArchived(!showArchived)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1.5 ${
+              showArchived ? "bg-slate-800 text-slate-200 border-slate-600" : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+            }`}
+          >
+            <Archive className="w-3.5 h-3.5" /> {showArchived ? "Active" : "Archived"}
+          </button>
+          <button
+            onClick={() => setFormModalOpen(true)}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" /> Add Tool
+          </button>
+        </div>
+      </div>
+
+      {showTaxReport && (
+        <Card className="border-amber-700/50">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <DollarSign className="w-5 h-5 text-amber-400" />
+                <p className="text-sm font-bold text-amber-300">{currentYear} Tax Report — CPA Ready</p>
+              </div>
+              <span className="text-xs text-slate-500">Form 4562 reference</span>
+            </div>
+            {taxSummary.totalDeduction === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-4">
+                No deductions calculated for {currentYear}. Add tools with purchase dates and depreciation methods.
+              </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                  <div className="bg-slate-950/60 border border-emerald-800/40 rounded-lg p-3">
+                    <p className="text-[10px] text-emerald-400 uppercase tracking-widest mb-1">Total {currentYear} Deduction</p>
+                    <p className="text-2xl font-bold text-emerald-400 tabular-nums">{currency(taxSummary.totalDeduction)}</p>
+                  </div>
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Tools With Deduction</p>
+                    <p className="text-2xl font-bold text-slate-100 tabular-nums">{taxSummary.tools.length}</p>
+                  </div>
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Methods Used</p>
+                    <p className="text-2xl font-bold text-slate-100 tabular-nums">{Object.keys(taxSummary.byMethod).length}</p>
+                  </div>
+                </div>
+                <div className="space-y-1 mb-4">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">By Method</p>
+                  {Object.entries(taxSummary.byMethod).map(([method, amount]) => (
+                    <div key={method} className="flex justify-between text-xs px-2 py-1.5 bg-slate-900/40 rounded">
+                      <span className="text-slate-300">{method}</span>
+                      <span className="text-emerald-400 font-mono">{currency(amount)}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 italic">
+                  Send this report to your CPA. Section 179 election is filed on Form 4562 Part I.
+                  IRS Pub 946 governs MACRS tables. Bonus depreciation is 100% for property placed in service
+                  after Jan 19, 2025. This is a tracking aid — confirm all figures with your tax professional.
+                </p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Total Cost Basis</p>
+          <p className="text-2xl font-bold text-slate-100 tabular-nums">{currency(totalCostBasis)}</p>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Earned Revenue</p>
+          <p className="text-2xl font-bold text-emerald-400 tabular-nums">{currency(totalEarnedRevenue)}</p>
+        </div>
+        <div className={`border rounded-xl p-4 ${
+          totalNetGain >= 0 ? "bg-emerald-950/20 border-emerald-800/40" : "bg-rose-950/20 border-rose-800/40"
+        }`}>
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Net Gain</p>
+          <p className={`text-2xl font-bold tabular-nums ${totalNetGain >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {totalNetGain >= 0 ? "+" : ""}{currency(totalNetGain)}
+          </p>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Fleet ROI</p>
+          <p className={`text-2xl font-bold tabular-nums ${
+            fleetROI == null ? "text-slate-500" : fleetROI >= 100 ? "text-emerald-400" : fleetROI >= 0 ? "text-amber-400" : "text-rose-400"
+          }`}>
+            {fleetROI == null ? "—" : `${fleetROI >= 0 ? "+" : ""}${fleetROI.toFixed(0)}%`}
+          </p>
+        </div>
+      </div>
+
+      {(ghostTools.length > 0 || overdueService.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {ghostTools.length > 0 && (
+            <Card className="border-amber-700/40">
+              <CardContent className="p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle className="w-4 h-4 text-amber-400" />
+                  <p className="text-xs font-semibold text-amber-300">Ghost Tools ({ghostTools.length})</p>
+                </div>
+                <p className="text-[10px] text-slate-500 mb-2">Bought, never logged on a job</p>
+                <div className="space-y-1">
+                  {ghostTools.slice(0, 3).map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setDetailTool(t)}
+                      className="w-full flex items-center justify-between text-xs px-2 py-1.5 rounded bg-slate-800/40 hover:bg-slate-800 text-left transition-colors"
+                    >
+                      <span className="text-slate-200 truncate">{t.name}</span>
+                      <span className="text-rose-400 shrink-0">{currency(t.purchase_price)}</span>
+                    </button>
+                  ))}
+                  {ghostTools.length > 3 && (<p className="text-[10px] text-slate-500 italic">+ {ghostTools.length - 3} more</p>)}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          {overdueService.length > 0 && (
+            <Card className="border-rose-700/40">
+              <CardContent className="p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Wrench className="w-4 h-4 text-rose-400" />
+                  <p className="text-xs font-semibold text-rose-300">Service Overdue ({overdueService.length})</p>
+                </div>
+                <div className="space-y-1">
+                  {overdueService.slice(0, 3).map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setDetailTool(t)}
+                      className="w-full flex items-center justify-between text-xs px-2 py-1.5 rounded bg-slate-800/40 hover:bg-slate-800 text-left transition-colors"
+                    >
+                      <span className="text-slate-200 truncate">{t.name}</span>
+                      <span className="text-rose-400 shrink-0">{Math.abs(daysUntil(t.next_service_due))}d ago</span>
+                    </button>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          <Inp placeholder="Search by name, brand, model, serial, supplier..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        <Sel value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className="w-auto">
+          <option value="All">All categories</option>
+          {TOOL_CATEGORIES.map((c) => (<option key={c.id} value={c.id}>{c.label}</option>))}
+        </Sel>
+        <Sel value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="w-auto">
+          <option value="All">All statuses</option>
+          {TOOL_STATUSES.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
+        </Sel>
+        <Sel value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="w-auto">
+          <option value="recent">Most recent</option>
+          <option value="roi">Highest ROI</option>
+          <option value="hours">Most hours</option>
+          <option value="cost">Highest cost</option>
+        </Sel>
+      </div>
+
+      {sorted.length === 0 ? (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <Wrench className="w-12 h-12 text-slate-700 mx-auto mb-3" />
+            <p className="text-slate-400 text-sm">
+              {showArchived ? "No archived tools." : tools.length === 0 ? "No tools in inventory yet. Add your first one to start tracking ROI." : "No tools match your filters."}
+            </p>
+            {!showArchived && tools.length === 0 && (
+              <button onClick={() => setFormModalOpen(true)} className="mt-4 px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors inline-flex items-center gap-1.5">
+                <Plus className="w-4 h-4" /> Add First Tool
+              </button>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+          {sorted.map((t) => {
+            const meta = getToolCategoryMeta(t.category);
+            const Icon = meta.icon;
+            const statusMeta = getToolStatusMeta(t.status);
+            const r = computeToolROI(t, toolUses, settings);
+            const serviceDue = t.next_service_due ? daysUntil(t.next_service_due) : null;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setDetailTool(t)}
+                className={`text-left p-4 rounded-lg border transition-all hover:scale-[1.01] hover:border-slate-600 ${meta.bg} ${meta.border}`}
+              >
+                <div className="flex items-start gap-2 mb-3">
+                  <Icon className={`w-5 h-5 ${meta.color} shrink-0 mt-0.5`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-100 truncate">{t.name}</p>
+                    <p className="text-[10px] text-slate-500 truncate">
+                      {t.brand}{t.brand && t.model_number && " • "}{t.model_number}
+                    </p>
+                  </div>
+                  {t.status !== "active" && (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 ${statusMeta.bg} ${statusMeta.color} border ${statusMeta.border}`}>
+                      {statusMeta.label}
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-2 mb-2 text-[10px]">
+                  <div>
+                    <p className="text-slate-500 uppercase tracking-widest">Cost</p>
+                    <p className="text-slate-200 font-mono">{currency(t.purchase_price)}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 uppercase tracking-widest">Hours</p>
+                    <p className="text-slate-200 font-mono">{r.totalHours.toFixed(1)}h</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 uppercase tracking-widest">ROI</p>
+                    <p className={`font-mono ${
+                      r.roi == null ? "text-slate-500" : r.roi >= 100 ? "text-emerald-400" : r.roi >= 0 ? "text-amber-400" : "text-rose-400"
+                    }`}>
+                      {r.roi == null ? "—" : `${r.roi >= 0 ? "+" : ""}${r.roi.toFixed(0)}%`}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {r.useCount === 0 && (Number(t.purchase_price) || 0) > 0 && (
+                    <span className="px-1.5 py-0.5 text-[9px] bg-amber-900/40 text-amber-300 rounded">ghost</span>
+                  )}
+                  {r.roi != null && r.roi >= 100 && (
+                    <span className="px-1.5 py-0.5 text-[9px] bg-emerald-900/40 text-emerald-300 rounded">earning</span>
+                  )}
+                  {serviceDue !== null && serviceDue < 0 && (
+                    <span className="px-1.5 py-0.5 text-[9px] bg-rose-900/40 text-rose-300 rounded">service overdue</span>
+                  )}
+                  {t.business_use_pct < 100 && (
+                    <span className="px-1.5 py-0.5 text-[9px] bg-slate-800 text-slate-400 rounded">{t.business_use_pct}% biz</span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <ToolFormModal isOpen={formModalOpen} existingTool={null} onClose={() => setFormModalOpen(false)} onSaved={handleSaved} />
+      {detailTool && (
+        <ToolDetailDrawer
+          tool={detailTool}
+          toolUses={toolUses}
+          toolMaintenance={toolMaintenance}
+          jobs={jobs}
+          settings={settings}
+          onClose={() => setDetailTool(null)}
+          onUpdated={handleUpdated}
+          onDeleted={handleDeleted}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// ================================================================
 // LOGIN SCREEN
 // ================================================================
 function LoginScreen({ onLogin }) {
@@ -4852,6 +6275,7 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
     </div>
   );
 }
+
 // ================================================================
 // JOB OPERATIONS
 // Punch list, material deliveries, photos sub-component for Jobs
@@ -7052,6 +8476,7 @@ const TABS = [
   { id: "Schedule",  label: "Schedule",   icon: Calendar },
   { id: "Clients",   label: "Clients",    icon: Users },
   { id: "Vault",     label: "Vault",      icon: FolderOpen },
+  { id: "Tools",     label: "Tools",      icon: Wrench },
   { id: "Settings",  label: "Settings",   icon: SettingsIcon },
 ];
 
@@ -7071,6 +8496,9 @@ function AppInner() {
   const [timeEntries, setTimeEntries] = useState([]);
   const [activeTimeEntry, setActiveTimeEntry] = useState(null); // currently-clocked-in session for this user
   const [documents, setDocuments] = useState([]);
+  const [tools, setTools] = useState([]);
+  const [toolUses, setToolUses] = useState([]);
+  const [toolMaintenance, setToolMaintenance] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Settings
@@ -7124,7 +8552,7 @@ function AppInner() {
     }
     let alive = true;
     (async () => {
-      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes] = await Promise.all([
+      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
         supabase.from("estimates").select("*").order("created_at", { ascending: false }),
         supabase.from("clients").select("*").order("name"),
@@ -7139,6 +8567,9 @@ function AppInner() {
           .is("clock_out", null)
           .maybeSingle(),
         supabase.from("company_documents").select("*").order("created_at", { ascending: false }),
+        supabase.from("tools").select("*").order("created_at", { ascending: false }),
+        supabase.from("tool_uses").select("*").order("used_date", { ascending: false }).limit(2000),
+        supabase.from("tool_maintenance").select("*").order("service_date", { ascending: false }).limit(1000),
       ]);
       if (!alive) return;
       setJobs(jobsRes.data || []);
@@ -7149,6 +8580,9 @@ function AppInner() {
       setTimeEntries(timeRes.data || []);
       setActiveTimeEntry(activeRes.data || null);
       setDocuments(docsRes.data || []);
+      setTools(toolsRes.data || []);
+      setToolUses(toolUsesRes.data || []);
+      setToolMaintenance(toolMaintRes.data || []);
       setDataLoaded(true);
     })();
     return () => { alive = false; };
@@ -7218,6 +8652,7 @@ function AppInner() {
     setDailyLogs([]); setJobPhotos([]);
     setTimeEntries([]); setActiveTimeEntry(null);
     setDocuments([]);
+    setTools([]); setToolUses([]); setToolMaintenance([]);
     setDataLoaded(false);
     toast.info("Signed out");
   };
@@ -7441,6 +8876,18 @@ function AppInner() {
             )}
             {tab === "Vault" && (
               <DocumentsVault documents={documents} setDocuments={setDocuments} />
+            )}
+            {tab === "Tools" && (
+              <ToolsROI
+                tools={tools}
+                setTools={setTools}
+                toolUses={toolUses}
+                setToolUses={setToolUses}
+                toolMaintenance={toolMaintenance}
+                setToolMaintenance={setToolMaintenance}
+                jobs={jobs}
+                settings={settings}
+              />
             )}
             {tab === "Settings" && (
               <Settings settings={settings} setSettings={setSettings} />
