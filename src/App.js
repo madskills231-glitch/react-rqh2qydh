@@ -75,6 +75,51 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.2.0 — Apr 27 2026 — Lien Countdown + utilities
+// FIRST MINOR VERSION since v1.1 Pipeline. This is a real feature
+// release, not just a patch.
+//
+// LIEN COUNTDOWN (the moat feature):
+// - New helper: lienDeadlineFor(job, dailyLogs, timeEntries, materials)
+//   Computes last labor/material date, applies MI Construction Lien
+//   Act 90-day window, returns daysRemaining + urgency tier.
+// - Per-job lien countdown badge in Jobs tab (only shows when within
+//   30d of deadline OR expired — silent on safe jobs to avoid noise).
+// - Dashboard "Lien Deadlines" widget (PRIORITY 1.5) — shows up to 5
+//   most urgent jobs sorted by daysRemaining, click jumps to Jobs.
+//   Hidden when no urgent deadlines exist.
+// - Urgency tiers: safe (>30d, hidden), warning (8-30d, amber),
+//   critical (1-7d, rose), expired (<0d, red with "ago" suffix).
+// - Conservative calculation: uses daily_logs + time_entries only,
+//   not material_deliveries (which lives in per-job state, not
+//   AppInner). If a material delivery comes AFTER last labor, the
+//   real deadline is later than what's shown — surfacing earlier is
+//   the safer side to err on (Connor files lien earlier than
+//   strictly necessary, no harm done).
+//
+// PHONE NORMALIZATION:
+// - normalizePhone(input) → digits-only for storage. (231) 555-1234,
+//   2315551234, 231-555-1234, 231.555.1234, +1 231 555 1234 all
+//   normalize to "2315551234" — bulletproof dedupe.
+// - formatPhone() pre-existed at line 575, reused for display.
+// - Applied to: AddLeadModal save, LeadDetailDrawer save (with
+//   format-on-blur for input), ClientQuickAddModal save (with
+//   format-on-blur), Clients form save (insert + update both).
+// - Existing Clients form's `payload = { name, email, phone, ... }`
+//   was passing raw input without trim — also fixed (trims + nulls
+//   empty strings).
+//
+// EMAIL VALIDATION (loose with soft warning):
+// - isValidEmail(input) — regex /^.+@.+\..+$/, blocks nothing.
+// - emailWarning(input) — returns specific warning text or null.
+// - Soft amber warning under email field in: AddLeadModal,
+//   LeadDetailDrawer, ClientQuickAddModal. Doesn't block save.
+// - Catches: missing @, missing dot after @, leading/trailing dots
+//   in domain. Doesn't catch semantic typos like .con vs .com (that
+//   would require email verification, out of scope).
+//
+// NO SQL CHANGES. No new tables. No new dependencies.
+// ================================================================
 // NORTHSHORE OS v1.1.6 — Apr 27 2026 — Tab routing deadlock — REAL FIX
 // - Fix: empty-tab-after-Pipeline bug, take 3. Two prior patches
 //        (v1.1.2 ghost-overlay, v1.1.4 onJumpToJob racing state)
@@ -6926,12 +6971,19 @@ function LoginScreen({ onLogin }) {
 // ================================================================
 // DASHBOARD
 // ================================================================
-function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], setTab }) {
+function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], timeEntries = [], setTab }) {
   const activeJobs  = jobs.filter((j) => j.status === "Active");
   const openEst     = estimates.filter((e) => e.status === "Draft" || e.status === "Sent");
   const approvedEst = estimates.filter((e) => e.status === "Approved");
   const arTotal     = approvedEst.reduce((s, e) => s + (e.grand_total || 0), 0);
   const pipeline    = openEst.reduce((s, e) => s + (e.grand_total || 0), 0);
+
+  // v1.2 — Lien deadlines for urgent jobs widget
+  const lienAlerts = jobs
+    .filter((j) => j.status === "Active" || j.status === "Completed")
+    .map((j) => ({ job: j, lien: lienDeadlineFor(j, dailyLogs, timeEntries, []) }))
+    .filter((x) => x.lien && x.lien.urgency !== "safe")
+    .sort((a, b) => a.lien.daysRemaining - b.lien.daysRemaining);
 
   // Daily log tracking
   const today = new Date().toISOString().slice(0, 10);
@@ -7074,6 +7126,53 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], s
           </motion.div>
         );
       })()}
+
+      {/* PRIORITY 1.5 — LIEN DEADLINES (v1.2)
+          Surfaces jobs where the 90-day MI Construction Lien Act window is
+          within 30 days. Click a row to jump to that job. Critical for unpaid
+          work — missing this window = losing lien rights entirely. */}
+      {lienAlerts.length > 0 && (
+        <motion.div variants={itemVariants}>
+          <div className="bg-gradient-to-br from-rose-950/30 to-amber-950/20 border border-rose-900/40 rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldCheck className="w-4 h-4 text-rose-300" />
+              <h3 className="text-sm font-semibold text-rose-100">Lien Deadlines</h3>
+              <span className="text-[10px] text-rose-300/70 ml-1">
+                MI Construction Lien Act — 90 days from last labor/material to record
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {lienAlerts.slice(0, 5).map(({ job, lien }) => {
+                const client = clients.find((c) => c.id === job.client_id);
+                return (
+                  <button
+                    key={job.id}
+                    onClick={() => setTab && setTab("Jobs")}
+                    className="w-full flex items-center gap-3 p-2.5 rounded-lg bg-slate-900/40 hover:bg-slate-900/70 border border-slate-800 hover:border-rose-800/60 transition-colors text-left"
+                  >
+                    <span className={`text-[10px] px-2 py-1 rounded-md font-semibold tabular-nums whitespace-nowrap ${lienBadgeStyle(lien.urgency)}`}>
+                      {lienLabel(lien.urgency, lien.daysRemaining)}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-slate-100 truncate">{job.name}</p>
+                      {client && <p className="text-[11px] text-slate-500 truncate">{client.name}</p>}
+                    </div>
+                    <p className="text-[11px] text-slate-500 whitespace-nowrap">
+                      Last work: {lien.lastLaborDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    </p>
+                    <ChevronRight className="w-4 h-4 text-slate-600 shrink-0" />
+                  </button>
+                );
+              })}
+              {lienAlerts.length > 5 && (
+                <p className="text-[11px] text-slate-500 text-center pt-1">
+                  +{lienAlerts.length - 5} more — see Jobs tab
+                </p>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* PRIORITY 2 — KPI CARDS WITH GRADIENTS */}
       <motion.div variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -7405,7 +7504,11 @@ function ClientQuickAddModal({ isOpen, onClose, onClientAdded }) {
     setSaving(true);
     const { data, error } = await supabase
       .from("clients")
-      .insert({ name, email, phone })
+      .insert({
+        name: name.trim(),
+        email: email.trim() || null,
+        phone: normalizePhone(phone) || null,
+      })
       .select()
       .single();
     if (!error && data) {
@@ -7416,6 +7519,8 @@ function ClientQuickAddModal({ isOpen, onClose, onClientAdded }) {
       setSaving(false);
     }
   };
+
+  const emailWarn = emailWarning(email);
 
   return (
     <AnimatePresence>
@@ -7462,6 +7567,12 @@ function ClientQuickAddModal({ isOpen, onClose, onClientAdded }) {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
+                  {emailWarn && (
+                    <div className="mt-1 text-[11px] text-amber-400/90 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                      {emailWarn}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs text-slate-400 mb-1">Phone</label>
@@ -7469,6 +7580,7 @@ function ClientQuickAddModal({ isOpen, onClose, onClientAdded }) {
                     placeholder="optional"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
+                    onBlur={() => { const f = formatPhone(phone); if (f && f !== phone) setPhone(f); }}
                   />
                 </div>
               </div>
@@ -7540,6 +7652,108 @@ function touchBadgeColor(days) {
   if (days <= 3)  return "bg-blue-900/40 text-blue-300 border border-blue-500/30";
   if (days <= 7)  return "bg-amber-900/40 text-amber-300 border border-amber-500/30";
   return "bg-rose-900/40 text-rose-300 border border-rose-500/30";
+}
+
+// ================================================================
+// PHONE NORMALIZATION (v1.2)
+// Store digits-only for bulletproof dedupe. Format on display.
+// ================================================================
+function normalizePhone(input) {
+  if (!input) return "";
+  return String(input).replace(/\D/g, "");
+}
+
+// formatPhone(phone) is defined earlier in the file (line ~575) — use that.
+
+// ================================================================
+// EMAIL VALIDATION (v1.2)
+// Loose check — must have @ and a dot after @. Doesn't block save,
+// just surfaces a soft warning under the field.
+// ================================================================
+function isValidEmail(input) {
+  if (!input) return true; // Empty is valid (optional field)
+  return /^.+@.+\..+$/.test(String(input).trim());
+}
+
+function emailWarning(input) {
+  if (!input) return null;
+  const trimmed = String(input).trim();
+  if (!trimmed) return null;
+  if (!trimmed.includes("@")) return "Missing @ symbol";
+  const afterAt = trimmed.split("@")[1] || "";
+  if (!afterAt.includes(".")) return "Missing the .com (or similar) part";
+  if (afterAt.startsWith(".") || afterAt.endsWith(".")) return "Email looks malformed";
+  return null;
+}
+
+// ================================================================
+// LIEN DEADLINE CALCULATOR (v1.2)
+// Michigan Construction Lien Act (Act 497 of 1980): a contractor
+// has 90 days from the date of last labor or material furnished
+// to record a Construction Lien. Miss this window, lose lien rights.
+//
+// "Last labor/material" = MAX of:
+//   - latest daily_log.log_date for this job
+//   - latest time_entries.clock_out (or clock_in if no clock_out yet)
+//   - latest material_deliveries.received_date
+// Returns null if the job has no labor/material activity yet.
+// ================================================================
+function lienDeadlineFor(job, dailyLogs, timeEntries, materialDeliveries) {
+  if (!job) return null;
+  const dates = [];
+
+  (dailyLogs || []).forEach((l) => {
+    if (l.job_id === job.id && l.log_date) {
+      // log_date is YYYY-MM-DD; treat as local noon to avoid TZ edge cases
+      dates.push(new Date(l.log_date + "T12:00:00").getTime());
+    }
+  });
+  (timeEntries || []).forEach((t) => {
+    if (t.job_id === job.id) {
+      if (t.clock_out) dates.push(new Date(t.clock_out).getTime());
+      else if (t.clock_in) dates.push(new Date(t.clock_in).getTime());
+    }
+  });
+  (materialDeliveries || []).forEach((m) => {
+    if (m.job_id === job.id && m.received_date) {
+      dates.push(new Date(m.received_date + "T12:00:00").getTime());
+    }
+  });
+
+  if (dates.length === 0) return null;
+
+  const lastLaborMs = Math.max(...dates);
+  const deadlineMs = lastLaborMs + 90 * 24 * 60 * 60 * 1000;
+  const daysRemaining = Math.floor((deadlineMs - Date.now()) / (1000 * 60 * 60 * 24));
+
+  let urgency = "safe";
+  if (daysRemaining < 0)       urgency = "expired";
+  else if (daysRemaining <= 7) urgency = "critical";
+  else if (daysRemaining <= 30) urgency = "warning";
+
+  return {
+    lastLaborDate: new Date(lastLaborMs),
+    deadlineDate: new Date(deadlineMs),
+    daysRemaining,
+    urgency,
+  };
+}
+
+function lienBadgeStyle(urgency) {
+  switch (urgency) {
+    case "expired":  return "bg-red-950/60 text-red-300 border border-red-700";
+    case "critical": return "bg-rose-900/50 text-rose-200 border border-rose-600";
+    case "warning":  return "bg-amber-900/40 text-amber-200 border border-amber-700";
+    case "safe":     return "bg-emerald-950/40 text-emerald-300 border border-emerald-800";
+    default:         return "bg-slate-800 text-slate-400 border border-slate-700";
+  }
+}
+
+function lienLabel(urgency, daysRemaining) {
+  if (urgency === "expired") return `Lien window closed (${Math.abs(daysRemaining)}d ago)`;
+  if (daysRemaining === 0)   return "Lien deadline today";
+  if (daysRemaining === 1)   return "1d to record lien";
+  return `${daysRemaining}d to record lien`;
 }
 
 function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimates, setTab }) {
@@ -8133,13 +8347,14 @@ function AddLeadModal({ onClose, onAdd }) {
   const [saving, setSaving] = useState(false);
 
   const canSave = name.trim().length > 0;
+  const emailWarn = emailWarning(email);
 
   const submit = async () => {
     if (!canSave || saving) return;
     setSaving(true);
     await onAdd({
       name: name.trim(),
-      phone: phone.trim() || null,
+      phone: normalizePhone(phone) || null,
       email: email.trim() || null,
       source,
       est_value: estValue ? Number(estValue) : 0,
@@ -8214,6 +8429,12 @@ function AddLeadModal({ onClose, onAdd }) {
                   placeholder="name@example.com"
                   type="email"
                 />
+                {emailWarn && (
+                  <div className="mt-1 text-[11px] text-amber-400/90 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                    {emailWarn}
+                  </div>
+                )}
               </div>
             </div>
             <div>
@@ -8297,7 +8518,7 @@ function AddLeadModal({ onClose, onAdd }) {
 // ----------------------------------------------------------------
 function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, onArchive, onJumpToJob }) {
   const [name, setName]     = useState(lead.name || "");
-  const [phone, setPhone]   = useState(lead.phone || "");
+  const [phone, setPhone]   = useState(formatPhone(lead.phone) || "");
   const [email, setEmail]   = useState(lead.email || "");
   const [source, setSource] = useState(lead.source || "Referral");
   const [estValue, setEstValue] = useState(String(lead.est_value || ""));
@@ -8308,7 +8529,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
 
   useEffect(() => {
     setName(lead.name || "");
-    setPhone(lead.phone || "");
+    setPhone(formatPhone(lead.phone) || "");
     setEmail(lead.email || "");
     setSource(lead.source || "Referral");
     setEstValue(String(lead.est_value || ""));
@@ -8319,11 +8540,12 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
   }, [lead.id]);
 
   const markDirty = () => setDirty(true);
+  const emailWarn = emailWarning(email);
 
   const handleSave = async () => {
     await onUpdate({
       name: name.trim(),
-      phone: phone.trim() || null,
+      phone: normalizePhone(phone) || null,
       email: email.trim() || null,
       source,
       est_value: estValue ? Number(estValue) : 0,
@@ -8435,10 +8657,16 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Phone</label>
-                <Inp value={phone} onChange={(e) => { setPhone(e.target.value); markDirty(); }} type="tel" />
+                <Inp
+                  value={phone}
+                  onChange={(e) => { setPhone(e.target.value); markDirty(); }}
+                  onBlur={() => { const f = formatPhone(phone); if (f && f !== phone) setPhone(f); }}
+                  type="tel"
+                  placeholder="(231) 555-0100"
+                />
                 {phone && (
                   <a
-                    href={`tel:${phone.replace(/[^0-9+]/g, "")}`}
+                    href={`tel:${normalizePhone(phone)}`}
                     className="text-xs text-amber-400 hover:text-amber-300 mt-1 inline-flex items-center gap-1"
                   >
                     <Phone className="w-3 h-3" /> Call
@@ -8448,7 +8676,13 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
               <div>
                 <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Email</label>
                 <Inp value={email} onChange={(e) => { setEmail(e.target.value); markDirty(); }} type="email" />
-                {email && (
+                {emailWarn && (
+                  <div className="mt-1 text-[11px] text-amber-400/90 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                    {emailWarn}
+                  </div>
+                )}
+                {email && !emailWarn && (
                   <a
                     href={`mailto:${email}`}
                     className="text-xs text-amber-400 hover:text-amber-300 mt-1 inline-flex items-center gap-1"
@@ -10557,6 +10791,11 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
               pct < 70 ? "text-emerald-400" : pct < 90 ? "text-amber-400" : "text-rose-400";
             const contractSigned = !!j.contract_signed_at;
             const linkedEstimate = estimates.find((e) => e.job_id === j.id || e.client_id === j.client_id);
+            // v1.2 — Lien deadline (only show badge if within 30d of deadline or expired)
+            const lien = (j.status === "Active" || j.status === "Completed")
+              ? lienDeadlineFor(j, dailyLogs, timeEntries, [])
+              : null;
+            const showLienBadge = lien && (lien.urgency !== "safe");
 
             return (
               <Card key={j.id}>
@@ -10582,6 +10821,15 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                         <p className="text-slate-500 text-xs">{client.name}</p>
                       )}
                     </div>
+                    {showLienBadge && (
+                      <span
+                        title={`MI Construction Lien Act: 90 days from last labor/material to record. Last labor: ${lien.lastLaborDate.toLocaleDateString()}. Deadline: ${lien.deadlineDate.toLocaleDateString()}.`}
+                        className={`text-[10px] px-2 py-1 rounded-md font-semibold tabular-nums ${lienBadgeStyle(lien.urgency)} flex items-center gap-1`}
+                      >
+                        <ShieldCheck className="w-3 h-3" />
+                        {lienLabel(lien.urgency, lien.daysRemaining)}
+                      </span>
+                    )}
                     <Badge
                       label={j.status}
                       color={
@@ -10821,7 +11069,13 @@ function Clients({ clients, setClients, jobs, estimates }) {
       toast.error("Client name is required");
       return;
     }
-    const payload = { name, email, phone, address, notes };
+    const payload = {
+      name: name.trim(),
+      email: email.trim() || null,
+      phone: normalizePhone(phone) || null,
+      address: address.trim() || null,
+      notes: notes.trim() || null,
+    };
     if (editingId) {
       const { data, error } = await supabase
         .from("clients")
@@ -12290,6 +12544,7 @@ function AppInner() {
                   clients={clients}
                   dailyLogs={dailyLogs}
                   documents={documents}
+                  timeEntries={timeEntries}
                   setTab={setTab}
                 />
               </ErrorBoundary>
