@@ -75,6 +75,31 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.3.1 — Apr 27 2026 — Photo upload fix
+//
+// FIX: Photo uploads were failing with "Could not find the 'url'
+// column of 'job_photos' in the schema cache." The deployed
+// job_photos table has no `url` column — only storage_path.
+//
+// Two ways to solve: (A) ALTER TABLE to add the column, or (B) stop
+// storing the URL and derive it from storage_path on read. Picked B
+// because:
+//   - The bucket is public; URLs are deterministic from path alone.
+//   - Storing duplicates the source of truth (path).
+//   - Avoids a schema migration — ships immediately.
+//   - If the bucket ever moves, derived URLs stay correct.
+//
+// PATCHED:
+//   - PhotoUploader insert no longer includes `url`. After a
+//     successful insert, we attach the publicUrl in-memory before
+//     calling onUploaded so the gallery displays it instantly.
+//   - AppInner photo-load hydrates photoRes rows: if a row has no
+//     `url` (the new normal), derive it via getPublicUrl. Backward
+//     compatible — legacy rows that DO have url set keep their value.
+//
+// NO SQL CHANGES NEEDED. No schema migration. No breaking changes
+// to existing photos.
+// ================================================================
 // NORTHSHORE OS v1.3.0 — Apr 27 2026 — Last-Touch Badges + Photo
 // Timeline + QOL bundle. SECOND minor version after v1.2.
 //
@@ -11748,14 +11773,18 @@ function PhotoUploader({ jobId, onUploaded }) {
           .insert({
             job_id: jobId,
             storage_path: filename,
-            url: urlData.publicUrl,
             phase,
             caption: caption || null,
           })
           .select()
           .single();
         if (dbError) throw dbError;
-        if (onUploaded) onUploaded(photoRecord);
+        // Derive the public URL on the fly — bucket is public, path is the
+        // source of truth. (v1.3.1 fix: previously we stored url as a
+        // column, but the deployed schema doesn't have one. Deriving avoids
+        // the schema-cache error and keeps URLs current if the bucket moves.)
+        const photoWithUrl = { ...photoRecord, url: urlData.publicUrl };
+        if (onUploaded) onUploaded(photoWithUrl);
         successCount++;
       } catch (err) {
         console.error("Upload error:", err);
@@ -12595,7 +12624,18 @@ function AppInner() {
       setEstimates(estRes.data || []);
       setClients(cliRes.data || []);
       setDailyLogs(logRes.data || []);
-      setJobPhotos(photoRes.data || []);
+      // v1.3.1 — Hydrate photo URLs from storage_path. The deployed
+      // job_photos table has no `url` column, so we derive on read.
+      // Backwards compatible with any legacy rows that DO have url set.
+      const hydratedPhotos = (photoRes.data || []).map((p) => {
+        if (p.url) return p;
+        if (p.storage_path) {
+          const { data: u } = supabase.storage.from("job-photos").getPublicUrl(p.storage_path);
+          return { ...p, url: u?.publicUrl || null };
+        }
+        return p;
+      });
+      setJobPhotos(hydratedPhotos);
       setTimeEntries(timeRes.data || []);
       setActiveTimeEntry(activeRes.data || null);
       setDocuments(docsRes.data || []);
