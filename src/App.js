@@ -75,6 +75,33 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.1.6 — Apr 27 2026 — Tab routing deadlock — REAL FIX
+// - Fix: empty-tab-after-Pipeline bug, take 3. Two prior patches
+//        (v1.1.2 ghost-overlay, v1.1.4 onJumpToJob racing state)
+//        addressed specific TRIGGERS but not the underlying
+//        MECHANISM. The mechanism: AppInner had an
+//        <AnimatePresence mode="wait"> wrapping all tab content,
+//        present since before Pipeline existed. mode="wait" holds
+//        the old motion.div in DOM and waits for its exit animation
+//        to fully complete before mounting the new tab. Pipeline
+//        introduced nested AnimatePresences and many concurrent
+//        animations (drag transforms, layout springs, modal fades,
+//        LeadCard hover springs). When a tab change happened while
+//        ANY of those animations were mid-flight, the outer
+//        mode="wait" would deadlock — never proceed past wait, old
+//        motion.div stays empty (because `tab === "Pipeline"` is
+//        now false so its conditional renders nothing), new tab
+//        never mounts. Result: empty content area, footer visible,
+//        nav highlighted on the new tab.
+//        Fix: removed AnimatePresence + motion.div wrapper from
+//        tab routing entirely. Tab switches are now instant.
+//        Lost: 200ms fade-in animation between tabs.
+//        Gained: bulletproof tab navigation that can't deadlock.
+//        ErrorBoundary still wraps each tab for crash recovery.
+// - Lesson: when a bug recurs after two targeted patches, the
+//        problem is upstream of where you've been looking. Stop
+//        patching triggers. Find the mechanism and remove it.
+// ================================================================
 // NORTHSHORE OS v1.1.5b — Apr 27 2026 — Build hotfix
 // - Fix: v1.1.5 file had a missing `function GlobalStyles() {`
 //        declaration line. The ErrorBoundary str_replace insertion
@@ -12247,15 +12274,14 @@ function AppInner() {
       </header>
 
       {/* MAIN CONTENT */}
+      {/* v1.1.6 — Removed AnimatePresence(mode="wait") wrapper. The fade-in
+          tab transition was deadlocking when Pipeline's nested animations
+          (modal close, drag mid-flight, spring still bouncing) didn't settle
+          cleanly before tab change. mode="wait" would hold the old motion.div
+          forever and never mount the new tab. Direct conditional render is
+          bulletproof. ErrorBoundary still wraps each tab for crash recovery. */}
       <main className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-6">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={tab}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.2 }}
-          >
+        <div key={tab}>
             {tab === "Dashboard" && (
               <ErrorBoundary label="Dashboard">
                 <Dashboard
@@ -12370,8 +12396,7 @@ function AppInner() {
                 <Settings settings={settings} setSettings={setSettings} />
               </ErrorBoundary>
             )}
-          </motion.div>
-        </AnimatePresence>
+        </div>
       </main>
 
       <footer className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-6 text-center text-[10px] text-slate-700 border-t border-slate-900 mt-12">
