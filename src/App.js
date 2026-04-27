@@ -75,6 +75,63 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.3.0 — Apr 27 2026 — Last-Touch Badges + Photo
+// Timeline + QOL bundle. SECOND minor version after v1.2.
+//
+// CORE FEATURES (per roadmap):
+//
+// LAST-TOUCH BADGES (v1.3 helpers):
+//   - lastActivityForJob(job, dailyLogs, timeEntries, jobPhotos, materials)
+//     returns Date of most recent activity (log, time entry, photo,
+//     material delivery), or null if no activity yet.
+//   - lastContactForClient() aggregates across all the client's jobs.
+//   - daysSinceActivity() / activityBadgeStyle() / activityLabel()
+//     for consistent display across surfaces.
+//   - Applied to:
+//     - Jobs list collapsed row — "Today / 1d ago / 3d ago" badge
+//       on Active jobs only (silent on Completed/Lost to reduce noise).
+//     - Clients list cards — "Last contact: Xd ago" pill, only when
+//       client has at least one job.
+//     - LeadCards already had touchBadgeColor from v1.1 — left alone.
+//
+// PHOTO TIMELINE:
+//   - PhotoGallery now has Grid/Timeline view toggle.
+//   - Grid is unchanged (existing aspect-square thumbnails with phase
+//     badge overlay).
+//   - Timeline groups photos by day, sorted newest first. Each day has
+//     a sticky header with date, photo count, and Clock icon. Each
+//     photo renders as a horizontal card: 128x128 thumbnail + phase
+//     badge + time + caption (or "No caption" italic placeholder).
+//   - Phase filter still works on both views.
+//   - Empty state unchanged.
+//
+// QOL BUNDLE:
+//
+// TAB NOTIFICATION BADGES:
+//   - Extended the existing Daily Logs alert pattern to:
+//     - Pipeline tab — count of stale leads (>7d since last_touch_at,
+//       not lost/won/archived). Amber badge.
+//     - Jobs tab — count of jobs with active lien warning (within
+//       30d of MI lien deadline or expired). Rose badge — more urgent.
+//   - Mobile hamburger dot now reflects sum across all three.
+//   - 9+ overflow handling (shows "9+" instead of double-digit).
+//
+// JOBS FILTER PERSISTENCE:
+//   - Jobs.filter and Jobs.search now persist via localStorage.
+//   - Survives tab switches AND full page reloads.
+//   - localStorage keys: northshore_jobs_filter, northshore_jobs_search.
+//   - Wrapped in try/catch (storage may be quota-exceeded or disabled).
+//
+// TOAST UNDO:
+//   - ToastProvider extended with action support — backward compatible.
+//     Existing toast.success(msg, dur) still works. New API:
+//     toast.success(msg, { duration: 6000, action: { label, onClick } }).
+//   - Wired to Pipeline lead archive — 6-second window to undo via
+//     supabase update + local state restore.
+//   - Patten ready to extend to other destructive actions in v1.3.x.
+//
+// NO SQL CHANGES. No new dependencies.
+// ================================================================
 // NORTHSHORE OS v1.2.0 — Apr 27 2026 — Lien Countdown + utilities
 // FIRST MINOR VERSION since v1.1 Pipeline. This is a real feature
 // release, not just a patch.
@@ -795,9 +852,10 @@ function ToastProvider({ children }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const push = useCallback((type, message, duration = 3500) => {
+  // v1.3 — action support (e.g. Undo button on archive/delete toasts)
+  const push = useCallback((type, message, duration = 3500, action = null) => {
     const id = Math.random().toString(36).slice(2, 10);
-    setToasts((prev) => [...prev, { id, type, message }]);
+    setToasts((prev) => [...prev, { id, type, message, action }]);
     if (duration > 0) {
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -806,11 +864,21 @@ function ToastProvider({ children }) {
     return id;
   }, []);
 
+  // Helper: accept either a number (legacy duration) or an options object
+  // ({ duration, action: { label, onClick } }). Keeps backward compat.
+  const _resolve = (type, msg, opts, defaultDur) => {
+    if (typeof opts === "number") return push(type, msg, opts);
+    if (opts && typeof opts === "object") {
+      return push(type, msg, opts.duration ?? defaultDur, opts.action ?? null);
+    }
+    return push(type, msg, defaultDur);
+  };
+
   const toast = {
-    success: (msg, dur) => push("success", msg, dur),
-    error:   (msg, dur) => push("error",   msg, dur ?? 5000),
-    info:    (msg, dur) => push("info",    msg, dur),
-    warn:    (msg, dur) => push("warn",    msg, dur ?? 4500),
+    success: (msg, opts) => _resolve("success", msg, opts, 3500),
+    error:   (msg, opts) => _resolve("error",   msg, opts, 5000),
+    info:    (msg, opts) => _resolve("info",    msg, opts, 3500),
+    warn:    (msg, opts) => _resolve("warn",    msg, opts, 4500),
   };
 
   const styles = {
@@ -846,6 +914,17 @@ function ToastProvider({ children }) {
               >
                 <Icon className="w-5 h-5 shrink-0 mt-0.5" />
                 <p className="flex-1 text-sm">{t.message}</p>
+                {t.action && (
+                  <button
+                    onClick={() => {
+                      try { t.action.onClick(); } catch (e) { console.error("Toast action failed:", e); }
+                      dismiss(t.id);
+                    }}
+                    className="text-xs font-semibold uppercase tracking-wide px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition-colors whitespace-nowrap"
+                  >
+                    {t.action.label}
+                  </button>
+                )}
                 <button
                   onClick={() => dismiss(t.id)}
                   className="opacity-60 hover:opacity-100 transition-opacity"
@@ -7756,6 +7835,76 @@ function lienLabel(urgency, daysRemaining) {
   return `${daysRemaining}d to record lien`;
 }
 
+// ================================================================
+// LAST-TOUCH / LAST-ACTIVITY HELPERS (v1.3)
+// "Last activity on a job" = most recent of:
+//   - daily log
+//   - time entry (clock_out preferred, fallback clock_in)
+//   - photo upload
+//   - material delivery received
+// Returns Date object or null. Used for "Last work: 3d ago" badges
+// in Jobs list, plus aggregated to compute last-contact-with-client.
+// ================================================================
+function lastActivityForJob(job, dailyLogs, timeEntries, jobPhotos, materialDeliveries) {
+  if (!job) return null;
+  const dates = [];
+  (dailyLogs || []).forEach((l) => {
+    if (l.job_id === job.id && l.log_date) dates.push(new Date(l.log_date + "T12:00:00").getTime());
+  });
+  (timeEntries || []).forEach((t) => {
+    if (t.job_id === job.id) {
+      if (t.clock_out) dates.push(new Date(t.clock_out).getTime());
+      else if (t.clock_in) dates.push(new Date(t.clock_in).getTime());
+    }
+  });
+  (jobPhotos || []).forEach((p) => {
+    if (p.job_id === job.id && p.created_at) dates.push(new Date(p.created_at).getTime());
+  });
+  (materialDeliveries || []).forEach((m) => {
+    if (m.job_id === job.id && m.received_date) dates.push(new Date(m.received_date + "T12:00:00").getTime());
+  });
+  if (dates.length === 0) return null;
+  return new Date(Math.max(...dates));
+}
+
+// Days since last activity (clamped to 0 for clock skew, null if no activity yet)
+function daysSinceActivity(date) {
+  if (!date) return null;
+  const ms = Date.now() - date.getTime();
+  return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
+}
+
+// Activity badge style — same urgency tiers as touchBadgeColor but tuned
+// for jobs (longer windows expected; "no activity in 14 days" is normal
+// for a finished build, but >30d on Active jobs is suspect)
+function activityBadgeStyle(days) {
+  if (days == null)    return "bg-slate-800/60 text-slate-500 border border-slate-700";
+  if (days <= 1)       return "bg-emerald-900/40 text-emerald-300 border border-emerald-700/50";
+  if (days <= 7)       return "bg-blue-900/40 text-blue-300 border border-blue-700/50";
+  if (days <= 30)      return "bg-amber-900/40 text-amber-200 border border-amber-700/50";
+  return "bg-rose-900/40 text-rose-300 border border-rose-700/50";
+}
+
+function activityLabel(days) {
+  if (days == null) return "No activity yet";
+  if (days === 0)   return "Today";
+  if (days === 1)   return "1d ago";
+  return `${days}d ago`;
+}
+
+// Last contact with a client = most recent activity across ALL their jobs
+function lastContactForClient(client, jobs, dailyLogs, timeEntries, jobPhotos, materialDeliveries) {
+  if (!client) return null;
+  const clientJobs = (jobs || []).filter((j) => j.client_id === client.id);
+  if (clientJobs.length === 0) return null;
+  const dates = clientJobs
+    .map((j) => lastActivityForJob(j, dailyLogs, timeEntries, jobPhotos, materialDeliveries))
+    .filter(Boolean)
+    .map((d) => d.getTime());
+  if (dates.length === 0) return null;
+  return new Date(Math.max(...dates));
+}
+
 function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimates, setTab }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -7903,17 +8052,38 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
       destructive: true,
     });
     if (!ok) return;
+    const previousLead = leads.find((l) => l.id === leadId);
     const { error } = await supabase
       .from("leads")
       .update({ archived_at: new Date().toISOString() })
       .eq("id", leadId);
     if (error) {
-      toast.error("Failed to archive");
+      toast.error("Failed to archive: " + error.message);
       return;
     }
     setLeads((arr) => arr.filter((l) => l.id !== leadId));
     setDrawerLead(null);
-    toast.success("Lead archived");
+    // v1.3 — Undo support
+    toast.success("Lead archived", {
+      duration: 6000,
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          const { error: undoErr } = await supabase
+            .from("leads")
+            .update({ archived_at: null })
+            .eq("id", leadId);
+          if (undoErr) {
+            toast.error("Restore failed: " + undoErr.message);
+            return;
+          }
+          if (previousLead) {
+            setLeads((arr) => [{ ...previousLead, archived_at: null }, ...arr]);
+          }
+          toast.info("Lead restored");
+        },
+      },
+    });
   };
 
   // ============================================================
@@ -10556,8 +10726,21 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
   const [budget, setBudget] = useState("");
   const [clientId, setClientId] = useState("");
   const [expandedJobId, setExpandedJobId] = useState(null);
-  const [filter, setFilter] = useState("Active");
-  const [search, setSearch] = useState("");
+  // v1.3 — filter + search persist across tab switches via localStorage
+  const [filter, setFilter] = useState(() => {
+    try { return localStorage.getItem("northshore_jobs_filter") || "Active"; }
+    catch { return "Active"; }
+  });
+  const [search, setSearch] = useState(() => {
+    try { return localStorage.getItem("northshore_jobs_search") || ""; }
+    catch { return ""; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("northshore_jobs_filter", filter); } catch (e) { /* quota or disabled */ }
+  }, [filter]);
+  useEffect(() => {
+    try { localStorage.setItem("northshore_jobs_search", search); } catch (e) { /* quota or disabled */ }
+  }, [search]);
 
   // Change order form (per-job, lifted state)
   const [coDescription, setCoDescription] = useState("");
@@ -10796,6 +10979,11 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
               ? lienDeadlineFor(j, dailyLogs, timeEntries, [])
               : null;
             const showLienBadge = lien && (lien.urgency !== "safe");
+            // v1.3 — Last activity (only show on Active jobs to avoid noise on completed/lost)
+            const lastActive = j.status === "Active"
+              ? lastActivityForJob(j, dailyLogs, timeEntries, jobPhotos, [])
+              : null;
+            const activityDays = daysSinceActivity(lastActive);
 
             return (
               <Card key={j.id}>
@@ -10821,6 +11009,14 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                         <p className="text-slate-500 text-xs">{client.name}</p>
                       )}
                     </div>
+                    {j.status === "Active" && activityDays != null && (
+                      <span
+                        title={lastActive ? `Last activity: ${lastActive.toLocaleDateString()}` : "No activity yet"}
+                        className={`text-[10px] px-2 py-1 rounded-md font-medium tabular-nums ${activityBadgeStyle(activityDays)}`}
+                      >
+                        {activityLabel(activityDays)}
+                      </span>
+                    )}
                     {showLienBadge && (
                       <span
                         title={`MI Construction Lien Act: 90 days from last labor/material to record. Last labor: ${lien.lastLaborDate.toLocaleDateString()}. Deadline: ${lien.deadlineDate.toLocaleDateString()}.`}
@@ -11048,7 +11244,7 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
 // ================================================================
 // CLIENTS
 // ================================================================
-function Clients({ clients, setClients, jobs, estimates }) {
+function Clients({ clients, setClients, jobs, estimates, dailyLogs = [], timeEntries = [], jobPhotos = [] }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [name, setName]   = useState("");
@@ -11231,6 +11427,9 @@ function Clients({ clients, setClients, jobs, estimates }) {
           {filtered.map((c) => {
             const cJobs = jobs.filter((j) => j.client_id === c.id);
             const cEsts = estimates.filter((e) => e.client_id === c.id);
+            // v1.3 — Last contact across all client's jobs
+            const lastContact = lastContactForClient(c, jobs, dailyLogs, timeEntries, jobPhotos, []);
+            const contactDays = daysSinceActivity(lastContact);
             return (
               <Card key={c.id}>
                 <CardContent className="p-4">
@@ -11256,6 +11455,18 @@ function Clients({ clients, setClients, jobs, estimates }) {
                       </button>
                     </div>
                   </div>
+
+                  {/* v1.3 last-contact badge — only shown when client has jobs */}
+                  {cJobs.length > 0 && contactDays != null && (
+                    <div className="mb-3">
+                      <span
+                        title={lastContact ? `Last activity: ${lastContact.toLocaleDateString()}` : ""}
+                        className={`text-[10px] px-2 py-1 rounded-md font-medium tabular-nums ${activityBadgeStyle(contactDays)}`}
+                      >
+                        Last contact: {activityLabel(contactDays)}
+                      </span>
+                    </div>
+                  )}
 
                   <div className="space-y-1 text-sm mb-3">
                     {c.phone && (
@@ -11612,9 +11823,23 @@ function PhotoUploader({ jobId, onUploaded }) {
 // ================================================================
 function PhotoGallery({ photos, onDelete }) {
   const [filter, setFilter] = useState("All");
+  const [view, setView] = useState("grid"); // v1.3 — "grid" | "timeline"
   const [lightboxPhoto, setLightboxPhoto] = useState(null);
 
   const filtered = filter === "All" ? photos : photos.filter((p) => p.phase === filter);
+
+  // v1.3 — Group photos by day for timeline view, sorted newest first
+  const grouped = (() => {
+    const map = new Map();
+    [...filtered]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .forEach((p) => {
+        const day = p.created_at ? new Date(p.created_at).toISOString().slice(0, 10) : "unknown";
+        if (!map.has(day)) map.set(day, []);
+        map.get(day).push(p);
+      });
+    return Array.from(map.entries());
+  })();
 
   if (photos.length === 0) {
     return (
@@ -11627,57 +11852,141 @@ function PhotoGallery({ photos, onDelete }) {
 
   return (
     <div>
-      <div className="flex flex-wrap gap-1 mb-3">
-        {["All", "Before", "Progress", "Issue", "Final", "Reference"].map((f) => {
-          const count = f === "All" ? photos.length : photos.filter((p) => p.phase === f).length;
-          if (f !== "All" && count === 0) return null;
-          return (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`text-[11px] px-2 py-1 rounded border transition-colors ${
-                filter === f
-                  ? "bg-amber-400 text-black border-amber-400"
-                  : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
-              }`}
-            >
-              {f} ({count})
-            </button>
-          );
-        })}
+      {/* View toggle (v1.3) */}
+      <div className="flex items-center justify-between mb-3 gap-2">
+        <div className="flex flex-wrap gap-1">
+          {["All", "Before", "Progress", "Issue", "Final", "Reference"].map((f) => {
+            const count = f === "All" ? photos.length : photos.filter((p) => p.phase === f).length;
+            if (f !== "All" && count === 0) return null;
+            return (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`text-[11px] px-2 py-1 rounded border transition-colors ${
+                  filter === f
+                    ? "bg-amber-400 text-black border-amber-400"
+                    : "bg-slate-900 text-slate-400 border-slate-700 hover:bg-slate-800"
+                }`}
+              >
+                {f} ({count})
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex bg-slate-900 border border-slate-700 rounded overflow-hidden text-[11px] flex-shrink-0">
+          <button
+            onClick={() => setView("grid")}
+            className={`px-2 py-1 transition-colors ${view === "grid" ? "bg-amber-400 text-black" : "text-slate-400 hover:bg-slate-800"}`}
+            title="Grid view"
+          >
+            Grid
+          </button>
+          <button
+            onClick={() => setView("timeline")}
+            className={`px-2 py-1 border-l border-slate-700 transition-colors ${view === "timeline" ? "bg-amber-400 text-black" : "text-slate-400 hover:bg-slate-800"}`}
+            title="Timeline view"
+          >
+            Timeline
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        {filtered.map((p) => (
-          <div
-            key={p.id}
-            className="relative group aspect-square rounded-lg overflow-hidden bg-slate-900 border border-slate-800 cursor-pointer"
-            onClick={() => setLightboxPhoto(p)}
-          >
-            <img
-              src={p.url}
-              alt={p.caption || "Job photo"}
-              loading="lazy"
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute top-1 left-1">
-              <Badge
-                label={p.phase}
-                color={
-                  p.phase === "Issue"  ? "red"    :
-                  p.phase === "Final"  ? "green"  :
-                  p.phase === "Before" ? "gray"   : "yellow"
-                }
+      {/* GRID VIEW (default — pre-existing) */}
+      {view === "grid" && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {filtered.map((p) => (
+            <div
+              key={p.id}
+              className="relative group aspect-square rounded-lg overflow-hidden bg-slate-900 border border-slate-800 cursor-pointer"
+              onClick={() => setLightboxPhoto(p)}
+            >
+              <img
+                src={p.url}
+                alt={p.caption || "Job photo"}
+                loading="lazy"
+                className="w-full h-full object-cover"
               />
+              <div className="absolute top-1 left-1">
+                <Badge
+                  label={p.phase}
+                  color={
+                    p.phase === "Issue"  ? "red"    :
+                    p.phase === "Final"  ? "green"  :
+                    p.phase === "Before" ? "gray"   : "yellow"
+                  }
+                />
+              </div>
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-end p-2 opacity-0 group-hover:opacity-100">
+                {p.caption && (
+                  <p className="text-xs text-white truncate w-full">{p.caption}</p>
+                )}
+              </div>
             </div>
-            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-end p-2 opacity-0 group-hover:opacity-100">
-              {p.caption && (
-                <p className="text-xs text-white truncate w-full">{p.caption}</p>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {/* TIMELINE VIEW (v1.3 new) — chronological feed grouped by day */}
+      {view === "timeline" && (
+        <div className="space-y-5">
+          {grouped.map(([day, dayPhotos]) => {
+            const dayLabel = day === "unknown"
+              ? "Unknown date"
+              : new Date(day + "T12:00:00").toLocaleDateString("en-US", {
+                  weekday: "short", month: "short", day: "numeric", year: "numeric",
+                });
+            return (
+              <div key={day}>
+                <div className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur py-2 -mx-1 px-1 mb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                    <span className="text-xs font-semibold text-slate-200 tabular-nums">{dayLabel}</span>
+                    <span className="text-[10px] text-slate-500">
+                      {dayPhotos.length} photo{dayPhotos.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pl-5">
+                  {dayPhotos.map((p) => (
+                    <div
+                      key={p.id}
+                      className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden cursor-pointer hover:border-amber-700/50 transition-colors flex"
+                      onClick={() => setLightboxPhoto(p)}
+                    >
+                      <img
+                        src={p.url}
+                        alt={p.caption || "Job photo"}
+                        loading="lazy"
+                        className="w-32 h-32 object-cover flex-shrink-0"
+                      />
+                      <div className="flex-1 p-3 min-w-0 flex flex-col">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge
+                            label={p.phase}
+                            color={
+                              p.phase === "Issue"  ? "red"    :
+                              p.phase === "Final"  ? "green"  :
+                              p.phase === "Before" ? "gray"   : "yellow"
+                            }
+                          />
+                          <span className="text-[10px] text-slate-500 tabular-nums">
+                            {p.created_at && new Date(p.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                          </span>
+                        </div>
+                        {p.caption ? (
+                          <p className="text-xs text-slate-300 line-clamp-3">{p.caption}</p>
+                        ) : (
+                          <p className="text-xs text-slate-600 italic">No caption</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* LIGHTBOX */}
       <AnimatePresence>
@@ -12383,6 +12692,35 @@ function AppInner() {
   const jobsMissingTodayLog = activeJobs.filter((j) => !jobsLoggedToday.has(j.id));
   const dailyAlertCount = jobsMissingTodayLog.length;
 
+  // v1.3 — Tab notification badges
+  // Pipeline: count of stale leads (>7d since last touch, not lost/archived)
+  const pipelineAlertCount = leads.filter((l) => {
+    if (l.archived_at || l.stage === "lost" || l.stage === "won") return false;
+    const days = daysSinceTouch(l.last_touch_at);
+    return days != null && days > 7;
+  }).length;
+  // Jobs: count of jobs in lien-warning state (within 30d of deadline or expired)
+  const jobsLienAlertCount = jobs.filter((j) => {
+    if (j.status !== "Active" && j.status !== "Completed") return false;
+    const lien = lienDeadlineFor(j, dailyLogs, timeEntries, []);
+    return lien && lien.urgency !== "safe";
+  }).length;
+
+  // Helper — pull count for a given tab id
+  const tabBadgeCount = (id) => {
+    if (id === "Daily")    return dailyAlertCount;
+    if (id === "Pipeline") return pipelineAlertCount;
+    if (id === "Jobs")     return jobsLienAlertCount;
+    return 0;
+  };
+  // Color tier for the badge (urgency varies by tab — lien is rose, others amber)
+  const tabBadgeColor = (id) => {
+    if (id === "Jobs") return "bg-rose-500"; // lien is critical
+    return "bg-amber-500";                    // stale leads, missed logs
+  };
+  // Aggregate count for the mobile-menu hamburger dot
+  const totalAlertCount = dailyAlertCount + pipelineAlertCount + jobsLienAlertCount;
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 flex items-center justify-center">
@@ -12420,7 +12758,7 @@ function AppInner() {
               aria-label="Menu"
             >
               {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-              {dailyAlertCount > 0 && !mobileNavOpen && (
+              {totalAlertCount > 0 && !mobileNavOpen && (
                 <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full" />
               )}
             </button>
@@ -12441,7 +12779,8 @@ function AppInner() {
           <nav className="hidden lg:flex items-center gap-1">
             {TABS.map((t) => {
               const Icon = t.icon;
-              const showBadge = t.id === "Daily" && dailyAlertCount > 0;
+              const badgeCount = tabBadgeCount(t.id);
+              const showBadge = badgeCount > 0;
               return (
                 <button
                   key={t.id}
@@ -12455,8 +12794,8 @@ function AppInner() {
                   <Icon className="w-4 h-4" />
                   {t.label}
                   {showBadge && (
-                    <span className="absolute -top-0.5 -right-0.5 bg-rose-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                      {dailyAlertCount}
+                    <span className={`absolute -top-0.5 -right-0.5 ${tabBadgeColor(t.id)} text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center`}>
+                      {badgeCount > 9 ? "9+" : badgeCount}
                     </span>
                   )}
                 </button>
@@ -12497,7 +12836,8 @@ function AppInner() {
               <div className="px-3 py-3 space-y-1">
                 {TABS.map((t) => {
                   const Icon = t.icon;
-                  const showBadge = t.id === "Daily" && dailyAlertCount > 0;
+                  const badgeCount = tabBadgeCount(t.id);
+                  const showBadge = badgeCount > 0;
                   return (
                     <button
                       key={t.id}
@@ -12514,8 +12854,8 @@ function AppInner() {
                       <Icon className="w-4 h-4" />
                       {t.label}
                       {showBadge && (
-                        <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                          {dailyAlertCount}
+                        <span className={`ml-auto ${tabBadgeColor(t.id)} text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center`}>
+                          {badgeCount > 9 ? "9+" : badgeCount}
                         </span>
                       )}
                     </button>
@@ -12624,6 +12964,9 @@ function AppInner() {
                   setClients={setClients}
                   jobs={jobs}
                   estimates={estimates}
+                  dailyLogs={dailyLogs}
+                  timeEntries={timeEntries}
+                  jobPhotos={jobPhotos}
                 />
               </ErrorBoundary>
             )}
