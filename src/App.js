@@ -72,6 +72,16 @@ import { supabase } from "./supabase";
 //   - Computed labor cost per job (settings.laborRate × actual hours)
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
+// ================================================================
+// NORTHSHORE OS v1.0.2 — Apr 27 2026 — Smoke test follow-ups
+// - Fix: notary name validation now fires whenever a name is typed
+//        (not just when "Notarized On" is also filled). Prevents
+//        single-word names like "Wendy" from saving as drafts.
+// - Fix: notarized-on date now requires both name and commission
+//        expiration to be filled (was previously optional).
+// - SQL: adds missing `crew` column to daily_logs table
+//        (form was writing to it but column never existed).
+// ================================================================
 // NORTHSHORE OS v1.0.1 — Apr 27 2026 — Documents bug fixes
 // - Fix: property_address fallback chain (job → client → placeholder)
 // - Fix: owner_name fallback chain (job → client → placeholder)
@@ -5685,15 +5695,30 @@ function SwornStatementModal({ isOpen, existingStatement, job, client, settings,
   }), { contract: 0, paid: 0, due: 0 });
 
   const handleSave = async () => {
-    // v1.0.1 — validation guards
+    // v1.0.2 — Validate any notary data the user has entered, regardless of
+    // whether they've filled "Notarized On". Prevents single-name "Wendy" from
+    // being saved as a draft and forgotten about.
+    if (notaryName.trim() && !notaryName.trim().includes(" ")) {
+      toast.error("Notary name needs first AND last name (e.g. \"Wendy Smith\"). Clear the field if not yet notarized.");
+      return;
+    }
     if (notarizedAt && notaryCommission && new Date(notaryCommission) <= new Date(notarizedAt)) {
       toast.error("Notary commission expires on or before the notarization date — pick a different notary.");
       return;
     }
-    if (notarizedAt && notaryName.trim() && !notaryName.trim().includes(" ")) {
-      toast.error("Notary name needs first AND last name (e.g. \"Wendy Smith\").");
-      return;
+    // If notarized date is set, require notary identity (name + commission expiration)
+    if (notarizedAt) {
+      if (!notaryName.trim()) {
+        toast.error("Notary name required when 'Notarized On' is filled.");
+        return;
+      }
+      if (!notaryCommission) {
+        toast.error("Commission expiration date required when 'Notarized On' is filled.");
+        return;
+      }
     }
+    // If commission expiration is set without a notarized date, that's fine
+    // (you might be entering notary info ahead of the actual notarization).
 
     setSaving(true);
     try {
