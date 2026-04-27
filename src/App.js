@@ -4943,7 +4943,6 @@ function InvoiceFormModal({ isOpen, existingInvoice, job, client, prevInvoiceTot
       setNotesToClient("");
       setInternalNotes("");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, existingInvoice, job?.id]);
 
   // Compute totals
