@@ -75,6 +75,71 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.1.5 — Apr 27 2026 — clients.address unblocked
+// - SQL: clients.address column added via migration
+//        (v1.1.5-clients-address-migration.sql).
+// - This unblocks Pipeline convert flow (Bug A from v1.1.4 audit)
+//        AND the latent bug in the existing Clients form, which
+//        would have failed the first time a user typed an address
+//        into a manually-added client.
+// - Code: no changes — both insert sites already reference the
+//        column correctly. SQL was the only missing piece.
+// - Six latent risks from v1.1.4 audit remain flagged. Not patched
+//        because each requires a design/UX decision Connor owns.
+// ================================================================
+// NORTHSHORE OS v1.1.4 — Apr 27 2026 — Full audit + preventative pass
+// - Fix (Bug B): empty Jobs tab after clicking "Open job" in Won-banner.
+//        Root cause: setDrawerLead(null) + setTab("Jobs") fired
+//        simultaneously, deadlocking the outer AnimatePresence
+//        (mode="wait") because the drawer's spring exit animation
+//        never reported complete while Pipeline was unmounting.
+//        Fix: don't manually close drawer in onJumpToJob — Pipeline
+//        unmount handles cleanup. No racing state updates.
+// - Add: ErrorBoundary component wrapping every tab. Render crashes
+//        now show a recoverable error message with "Try again"
+//        instead of silently producing an empty page. Closes the
+//        entire class of "what happened to the content" mysteries.
+// - Fix: handleUpdateLead now rolls back local state on supabase
+//        failure (was leaving optimistic patch permanent on error).
+// - Fix: handleAddLead now shows actual error message on failure
+//        (was hiding the supabase reason behind generic toast).
+// - Fix: daysSinceTouch clamps negative values to 0 — prevents
+//        "-1d" badge display when client clock is ahead of DB.
+// - Fix: LeadDetailDrawer now shows "Linked job no longer exists"
+//        when won_job_id references a deleted job.
+// - Fix: Jobs.filteredJobs defensive null guard — malformed job
+//        entries skip silently instead of crashing the whole tab.
+// - Add: Pipeline console-warns when leads have unrecognized stage
+//        values (catches schema drift that would otherwise hide
+//        cards from the board silently).
+// - FLAGGED (waiting on Connor): clients.address column doesn't
+//        exist in deployed schema — convert flow + Clients form
+//        both reference it. Two-line fix either direction once
+//        decided. See CHANGELOG.
+// ================================================================
+// NORTHSHORE OS v1.1.3 — Apr 27 2026 — Polished button system
+// - Fix: buttons morphed/shrunk during saving state because the
+//        global <Spinner /> component (a w-8 h-8 with py-12 wrapper)
+//        was being rendered inline. Added <BtnSpinner /> — a small
+//        w-4 h-4 inline spinner that matches icon footprint exactly.
+//        Saving state now shows "Adding..." / "Converting..." /
+//        "Saving..." text alongside the spinner, button width
+//        stable across states.
+// - Polish: full button styling overhaul. New .btn-polished class
+//        system with:
+//          • subtle 180deg gradient (lighter top → darker bottom)
+//          • inner 1px white highlight at top (bevel effect)
+//          • offset shadow + color-matched glow
+//          • hover: brightness +5%, glow intensifies
+//          • active/press: scale(0.97), satisfying tactile feel
+//          • dedicated disabled style (.btn-muted) that doesn't
+//            look like a render bug — slate gradient + readable
+//            label like "No Changes"
+//        Variants: btn-amber, btn-emerald, btn-rose, btn-slate,
+//        btn-ghost-rose, btn-muted. Applied across all Pipeline
+//        action buttons (Add Lead, Convert, Mark Lost, Archive,
+//        Save Changes, Cancel, Show Lost).
+// ================================================================
 // NORTHSHORE OS v1.1.2 — Apr 27 2026 — Pipeline ghost-overlay fix
 // - Fix: archiving a lead in Pipeline left a black overlay node
 //        attached to the DOM, making other tabs render empty.
@@ -170,7 +235,61 @@ import { supabase } from "./supabase";
 // GLOBAL STYLES
 // Custom scrollbars + keyframes injected once at app root
 // ================================================================
-function GlobalStyles() {
+// ================================================================
+// ERROR BOUNDARY (v1.1.4) — Surfaces render errors instead of
+// silently unmounting subtree. Wrap each tab's content so a crash
+// in Pipeline doesn't blank out the whole app, and a crash in Jobs
+// shows a recoverable error message instead of an empty page.
+// ================================================================
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, info: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("Render crash in", this.props.label || "subtree", error, info);
+    this.setState({ info });
+  }
+  reset = () => this.setState({ error: null, info: null });
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="bg-rose-950/30 border border-rose-900/60 rounded-2xl p-6 my-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-6 h-6 text-rose-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-rose-200 font-semibold mb-1">
+                Something broke in {this.props.label || "this view"}
+              </div>
+              <div className="text-rose-300/80 text-sm mb-3">
+                The app caught the error so the rest of the page still works.
+                Switch to another tab and back, or reload to recover.
+              </div>
+              <details className="text-xs text-rose-300/70">
+                <summary className="cursor-pointer hover:text-rose-200">Technical detail</summary>
+                <pre className="mt-2 p-2 bg-black/40 rounded overflow-x-auto whitespace-pre-wrap break-words">
+                  {String(this.state.error?.message || this.state.error)}
+                </pre>
+              </details>
+              <button
+                onClick={this.reset}
+                className="mt-3 px-3 py-1.5 bg-rose-900/40 hover:bg-rose-900/60 border border-rose-800 rounded text-rose-100 text-xs font-medium"
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+
   return (
     <style>{`
       /* Custom scrollbar - dark theme friendly */
@@ -209,6 +328,125 @@ function GlobalStyles() {
         margin: 0;
       }
       input[type="number"] { -moz-appearance: textfield; }
+
+      /* ============================================================
+         POLISHED BUTTON SYSTEM
+         Framer-grade: gradient body, inner highlight, offset shadow,
+         color-matched glow, scale-down on press. Use .btn-polished
+         + a color modifier (.btn-amber / .btn-emerald / .btn-rose
+         / .btn-slate / .btn-ghost). Always pair with inline-flex
+         items-center on the parent for icon+text alignment.
+         ============================================================ */
+      .btn-polished {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 600;
+        border-radius: 0.625rem;
+        padding: 0.5rem 1rem;
+        transition: transform 0.12s cubic-bezier(0.4, 0, 0.2, 1),
+                    box-shadow 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+                    filter 0.12s ease;
+        will-change: transform, box-shadow;
+        isolation: isolate;
+      }
+      .btn-polished::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 50%, rgba(0,0,0,0.10) 100%);
+        opacity: 1;
+        z-index: 1;
+      }
+      .btn-polished > * { position: relative; z-index: 2; }
+      .btn-polished:hover { filter: brightness(1.05); }
+      .btn-polished:active:not(:disabled) { transform: scale(0.97); }
+      .btn-polished:disabled {
+        cursor: not-allowed;
+        filter: saturate(0.3) brightness(0.7);
+      }
+
+      /* Amber primary */
+      .btn-amber {
+        background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+        color: #0f172a;
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.3) inset,
+                    0 6px 20px -4px rgba(245, 158, 11, 0.45),
+                    0 2px 6px -1px rgba(0,0,0,0.3);
+      }
+      .btn-amber:hover:not(:disabled) {
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.4) inset,
+                    0 8px 28px -4px rgba(245, 158, 11, 0.6),
+                    0 3px 10px -1px rgba(0,0,0,0.35);
+      }
+
+      /* Emerald success */
+      .btn-emerald {
+        background: linear-gradient(180deg, #34d399 0%, #10b981 100%);
+        color: #0f172a;
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.3) inset,
+                    0 6px 20px -4px rgba(16, 185, 129, 0.5),
+                    0 2px 6px -1px rgba(0,0,0,0.3);
+      }
+      .btn-emerald:hover:not(:disabled) {
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.4) inset,
+                    0 8px 28px -4px rgba(16, 185, 129, 0.65),
+                    0 3px 10px -1px rgba(0,0,0,0.35);
+      }
+
+      /* Rose danger */
+      .btn-rose {
+        background: linear-gradient(180deg, #fb7185 0%, #e11d48 100%);
+        color: #ffffff;
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.25) inset,
+                    0 6px 20px -4px rgba(225, 29, 72, 0.5),
+                    0 2px 6px -1px rgba(0,0,0,0.3);
+      }
+      .btn-rose:hover:not(:disabled) {
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.35) inset,
+                    0 8px 28px -4px rgba(225, 29, 72, 0.65),
+                    0 3px 10px -1px rgba(0,0,0,0.35);
+      }
+
+      /* Slate secondary (cancel, neutral) */
+      .btn-slate {
+        background: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+        color: #e2e8f0;
+        box-shadow: 0 1px 0 0 rgba(255,255,255,0.06) inset,
+                    0 1px 0 0 rgba(0,0,0,0.4),
+                    0 2px 6px -1px rgba(0,0,0,0.4);
+        border: 1px solid rgba(71, 85, 105, 0.6);
+      }
+      .btn-slate:hover:not(:disabled) {
+        background: linear-gradient(180deg, #475569 0%, #334155 100%);
+      }
+
+      /* Ghost (subtle, archive-style danger) */
+      .btn-ghost-rose {
+        background: rgba(76, 5, 25, 0.4);
+        color: #fda4af;
+        border: 1px solid rgba(159, 18, 57, 0.5);
+        box-shadow: 0 2px 6px -1px rgba(0,0,0,0.3);
+      }
+      .btn-ghost-rose:hover:not(:disabled) {
+        background: rgba(127, 29, 29, 0.5);
+        border-color: rgba(225, 29, 72, 0.6);
+        color: #fecdd3;
+      }
+
+      /* Disabled-but-readable (no-changes-yet state) */
+      .btn-muted {
+        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+        color: #64748b;
+        border: 1px solid rgba(51, 65, 85, 0.6);
+        cursor: not-allowed;
+        opacity: 1 !important;  /* override Btn component's disabled:opacity-50 */
+        filter: none !important; /* override .btn-polished:disabled filter */
+      }
+      .btn-polished.btn-muted::before { display: none; } /* no inner highlight on muted */
     `}</style>
   );
 }
@@ -405,6 +643,13 @@ function Spinner() {
     <div className="flex items-center justify-center py-12">
       <div className="w-8 h-8 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
     </div>
+  );
+}
+
+// Inline button spinner — matches w-4 h-4 icon footprint so buttons don't morph during save
+function BtnSpinner({ className = "" }) {
+  return (
+    <div className={`w-4 h-4 mr-1.5 border-2 border-current border-t-transparent rounded-full animate-spin ${className}`} />
   );
 }
 
@@ -7246,7 +7491,8 @@ const LEAD_SOURCES = [
 function daysSinceTouch(ts) {
   if (!ts) return null;
   const ms = Date.now() - new Date(ts).getTime();
-  return Math.floor(ms / (1000 * 60 * 60 * 24));
+  // Clamp to 0 — clock skew between client and DB can yield slightly negative ms
+  return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
 }
 
 function touchBadgeColor(days) {
@@ -7274,6 +7520,17 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
 
   const activeLeads = leads.filter((l) => !l.archived_at && l.stage !== "lost");
   const lostLeads   = leads.filter((l) => l.stage === "lost" && !l.archived_at);
+
+  // Sanity check — if a lead's stage isn't recognized, log it so schema drift surfaces
+  // instead of cards silently disappearing from the board
+  const knownStageIds = PIPELINE_STAGES.map((s) => s.id).concat(["lost"]);
+  const orphanedLeads = activeLeads.filter((l) => !knownStageIds.includes(l.stage));
+  if (orphanedLeads.length > 0) {
+    console.warn(
+      `[Pipeline] ${orphanedLeads.length} lead(s) have unrecognized stage values:`,
+      orphanedLeads.map((l) => ({ id: l.id, name: l.name, stage: l.stage }))
+    );
+  }
 
   const grouped = PIPELINE_STAGES.reduce((acc, s) => {
     acc[s.id] = activeLeads.filter((l) => l.stage === s.id);
@@ -7362,7 +7619,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
       .select()
       .single();
     if (error) {
-      toast.error("Failed to add lead");
+      toast.error("Failed to add lead: " + error.message);
       return;
     }
     setLeads((arr) => [data, ...arr]);
@@ -7371,11 +7628,17 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
   };
 
   const handleUpdateLead = async (leadId, patch) => {
+    // Snapshot the current lead so we can roll back if supabase rejects
+    const previousLead = leads.find((l) => l.id === leadId);
     const optimistic = { ...patch, last_touch_at: new Date().toISOString() };
     setLeads((arr) => arr.map((l) => (l.id === leadId ? { ...l, ...optimistic } : l)));
     const { error } = await supabase.from("leads").update(optimistic).eq("id", leadId);
     if (error) {
-      toast.error("Failed to update lead");
+      toast.error("Failed to update lead: " + error.message);
+      // Roll back to pre-edit state
+      if (previousLead) {
+        setLeads((arr) => arr.map((l) => (l.id === leadId ? previousLead : l)));
+      }
     }
   };
 
@@ -7532,14 +7795,14 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
         <div className="flex items-center gap-2">
           <Btn
             onClick={() => setShowLost((v) => !v)}
-            className="inline-flex items-center bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm"
+            className="btn-polished btn-slate text-sm"
           >
             <Archive className="w-4 h-4 mr-1.5" />
             {showLost ? "Hide" : "Show"} Lost ({lostLeads.length})
           </Btn>
           <Btn
             onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20"
+            className="btn-polished btn-amber"
           >
             <UserPlus className="w-4 h-4 mr-1.5" />
             Add Lead
@@ -7584,7 +7847,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
             </div>
             <Btn
               onClick={() => setShowAddModal(true)}
-              className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/30"
+              className="btn-polished btn-amber"
             >
               <UserPlus className="w-4 h-4 mr-1.5" />
               Add your first lead
@@ -7710,7 +7973,10 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
             onUpdate={(patch) => handleUpdateLead(drawerLead.id, patch)}
             onArchive={() => handleArchiveLead(drawerLead.id)}
             onJumpToJob={(jobId) => {
-              setDrawerLead(null);
+              // Don't manually close the drawer here — Pipeline unmount will tear it down.
+              // Calling setDrawerLead(null) AND setTab("Jobs") simultaneously caused the
+              // outer AnimatePresence(mode="wait") to deadlock waiting on the drawer's
+              // spring exit animation while Pipeline itself was unmounting. v1.1.4 fix.
               setTab("Jobs");
             }}
           />
@@ -7970,16 +8236,16 @@ function AddLeadModal({ onClose, onAdd }) {
           <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
             <Btn
               onClick={onClose}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+              className="btn-polished btn-slate"
             >
               Cancel
             </Btn>
             <Btn
               onClick={submit}
               disabled={!canSave || saving}
-              className="inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn-polished btn-amber"
             >
-              {saving ? <Spinner /> : <><Save className="w-4 h-4 mr-1.5" />Add Lead</>}
+              {saving ? <><BtnSpinner />Adding...</> : <><Save className="w-4 h-4 mr-1.5" />Add Lead</>}
             </Btn>
           </div>
         </motion.div>
@@ -8103,6 +8369,11 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
                       <ArrowRight className="w-3 h-3" />
                     </button>
                   )}
+                  {!linkedJob && lead.won_job_id && (
+                    <div className="text-xs text-amber-300/80 italic mt-1">
+                      Linked job no longer exists (may have been deleted).
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -8189,7 +8460,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
           <div className="sticky bottom-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 px-5 py-4 flex items-center justify-between gap-2">
             <Btn
               onClick={onArchive}
-              className="inline-flex items-center bg-rose-950/40 hover:bg-rose-900/40 text-rose-300 border border-rose-900/60 text-sm"
+              className="btn-polished btn-ghost-rose text-sm"
             >
               <Trash2 className="w-4 h-4 mr-1.5" />
               Archive
@@ -8197,11 +8468,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
             <Btn
               onClick={handleSave}
               disabled={!dirty}
-              className={
-                dirty
-                  ? "inline-flex items-center bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold shadow-lg shadow-amber-500/30"
-                  : "inline-flex items-center bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed"
-              }
+              className={dirty ? "btn-polished btn-amber" : "btn-polished btn-muted"}
             >
               <Save className="w-4 h-4 mr-1.5" />
               {dirty ? "Save Changes" : "No Changes"}
@@ -8283,16 +8550,16 @@ function ConvertLeadModal({ lead, onClose, onConvert }) {
           <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
             <Btn
               onClick={onClose}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+              className="btn-polished btn-slate"
             >
               Cancel
             </Btn>
             <Btn
               onClick={submit}
               disabled={saving}
-              className="inline-flex items-center bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold shadow-lg shadow-emerald-500/30 disabled:opacity-50"
+              className="btn-polished btn-emerald"
             >
-              {saving ? <Spinner /> : <><Trophy className="w-4 h-4 mr-1.5" />Convert</>}
+              {saving ? <><BtnSpinner />Converting...</> : <><Trophy className="w-4 h-4 mr-1.5" />Convert</>}
             </Btn>
           </div>
         </motion.div>
@@ -8359,16 +8626,16 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
           <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
             <Btn
               onClick={onClose}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+              className="btn-polished btn-slate"
             >
               Cancel
             </Btn>
             <Btn
               onClick={submit}
               disabled={saving}
-              className="inline-flex items-center bg-rose-500 hover:bg-rose-400 text-white font-semibold shadow-lg shadow-rose-500/30 disabled:opacity-50"
+              className="btn-polished btn-rose"
             >
-              {saving ? <Spinner /> : <><XCircle className="w-4 h-4 mr-1.5" />Mark Lost</>}
+              {saving ? <><BtnSpinner />Saving...</> : <><XCircle className="w-4 h-4 mr-1.5" />Mark Lost</>}
             </Btn>
           </div>
         </motion.div>
@@ -10142,6 +10409,8 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
   }, [coDescription, coAmount, clients, settings, toast]);
 
   const filteredJobs = jobs.filter((j) => {
+    // Defensive guard — skip malformed/null entries instead of crashing the whole tab
+    if (!j || typeof j !== "object" || !j.name) return false;
     if (filter !== "All" && j.status !== filter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -11976,98 +12245,118 @@ function AppInner() {
             transition={{ duration: 0.2 }}
           >
             {tab === "Dashboard" && (
-              <Dashboard
-                jobs={jobs}
-                estimates={estimates}
-                clients={clients}
-                dailyLogs={dailyLogs}
-                documents={documents}
-                setTab={setTab}
-              />
+              <ErrorBoundary label="Dashboard">
+                <Dashboard
+                  jobs={jobs}
+                  estimates={estimates}
+                  clients={clients}
+                  dailyLogs={dailyLogs}
+                  documents={documents}
+                  setTab={setTab}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Estimator" && (
-              <Estimator
-                settings={settings}
-                estimates={estimates}
-                setEstimates={setEstimates}
-                onJobCreated={onJobCreated}
-                clients={clients}
-                setClients={setClients}
-                jobs={jobs}
-              />
+              <ErrorBoundary label="Estimator">
+                <Estimator
+                  settings={settings}
+                  estimates={estimates}
+                  setEstimates={setEstimates}
+                  onJobCreated={onJobCreated}
+                  clients={clients}
+                  setClients={setClients}
+                  jobs={jobs}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Pipeline" && (
-              <Pipeline
-                leads={leads}
-                setLeads={setLeads}
-                clients={clients}
-                setClients={setClients}
-                jobs={jobs}
-                setJobs={setJobs}
-                estimates={estimates}
-                setTab={setTab}
-              />
+              <ErrorBoundary label="Pipeline">
+                <Pipeline
+                  leads={leads}
+                  setLeads={setLeads}
+                  clients={clients}
+                  setClients={setClients}
+                  jobs={jobs}
+                  setJobs={setJobs}
+                  estimates={estimates}
+                  setTab={setTab}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Jobs" && (
-              <Jobs
-                jobs={jobs}
-                setJobs={setJobs}
-                clients={clients}
-                jobPhotos={jobPhotos}
-                setJobPhotos={setJobPhotos}
-                dailyLogs={dailyLogs}
-                settings={settings}
-                estimates={estimates}
-                timeEntries={timeEntries}
-                setTimeEntries={setTimeEntries}
-                activeTimeEntry={activeTimeEntry}
-                invoices={invoices}
-                setInvoices={setInvoices}
-                invoicePayments={invoicePayments}
-                setInvoicePayments={setInvoicePayments}
-                lienWaivers={lienWaivers}
-                setLienWaivers={setLienWaivers}
-                swornStatements={swornStatements}
-                setSwornStatements={setSwornStatements}
-                jobSubs={jobSubs}
-                setJobSubs={setJobSubs}
-              />
+              <ErrorBoundary label="Jobs">
+                <Jobs
+                  jobs={jobs}
+                  setJobs={setJobs}
+                  clients={clients}
+                  jobPhotos={jobPhotos}
+                  setJobPhotos={setJobPhotos}
+                  dailyLogs={dailyLogs}
+                  settings={settings}
+                  estimates={estimates}
+                  timeEntries={timeEntries}
+                  setTimeEntries={setTimeEntries}
+                  activeTimeEntry={activeTimeEntry}
+                  invoices={invoices}
+                  setInvoices={setInvoices}
+                  invoicePayments={invoicePayments}
+                  setInvoicePayments={setInvoicePayments}
+                  lienWaivers={lienWaivers}
+                  setLienWaivers={setLienWaivers}
+                  swornStatements={swornStatements}
+                  setSwornStatements={setSwornStatements}
+                  jobSubs={jobSubs}
+                  setJobSubs={setJobSubs}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Daily" && (
-              <DailyLogs
-                jobs={jobs}
-                dailyLogs={dailyLogs}
-                setDailyLogs={setDailyLogs}
-              />
+              <ErrorBoundary label="Daily Logs">
+                <DailyLogs
+                  jobs={jobs}
+                  dailyLogs={dailyLogs}
+                  setDailyLogs={setDailyLogs}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Schedule" && (
-              <Schedule jobs={jobs} />
+              <ErrorBoundary label="Schedule">
+                <Schedule jobs={jobs} />
+              </ErrorBoundary>
             )}
             {tab === "Clients" && (
-              <Clients
-                clients={clients}
-                setClients={setClients}
-                jobs={jobs}
-                estimates={estimates}
-              />
+              <ErrorBoundary label="Clients">
+                <Clients
+                  clients={clients}
+                  setClients={setClients}
+                  jobs={jobs}
+                  estimates={estimates}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Vault" && (
-              <DocumentsVault documents={documents} setDocuments={setDocuments} />
+              <ErrorBoundary label="Vault">
+                <DocumentsVault documents={documents} setDocuments={setDocuments} />
+              </ErrorBoundary>
             )}
             {tab === "Tools" && (
-              <ToolsROI
-                tools={tools}
-                setTools={setTools}
-                toolUses={toolUses}
-                setToolUses={setToolUses}
-                toolMaintenance={toolMaintenance}
-                setToolMaintenance={setToolMaintenance}
-                jobs={jobs}
-                settings={settings}
-              />
+              <ErrorBoundary label="Tools">
+                <ToolsROI
+                  tools={tools}
+                  setTools={setTools}
+                  toolUses={toolUses}
+                  setToolUses={setToolUses}
+                  toolMaintenance={toolMaintenance}
+                  setToolMaintenance={setToolMaintenance}
+                  jobs={jobs}
+                  settings={settings}
+                />
+              </ErrorBoundary>
             )}
             {tab === "Settings" && (
-              <Settings settings={settings} setSettings={setSettings} />
+              <ErrorBoundary label="Settings">
+                <Settings settings={settings} setSettings={setSettings} />
+              </ErrorBoundary>
             )}
           </motion.div>
         </AnimatePresence>
