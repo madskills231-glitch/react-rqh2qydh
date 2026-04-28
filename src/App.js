@@ -77,6 +77,42 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.4.1 — Apr 27 2026 — Audit findings cleanup +
+// guardrails so this can't happen again
+//
+// REQUIRES SQL: v1.4.1-cleanup-and-indexes.sql
+//   Part 1: 3 FK indexes (jobs.client_id, estimates.client_id,
+//           estimates.job_id) — performance, not correctness.
+//   Part 2: cascade-check before deletes (eyeball, all should be 0).
+//   Part 3: deletes 7 confirmed-test rows (3 lost leads w/o reason,
+//           2 completed jobs $0 actual, 2 duplicate JOHN clients).
+//   Part 4: verify all three audit issues now return 0.
+//
+// CODE:
+//
+// LOST REASON IS NOW REQUIRED:
+//   - MarkLostModal previously had "Reason (optional)" with a
+//     "skip" path, which let 3 test leads escape with no reason.
+//     CRM hygiene says you should always know WHY you lost — it
+//     tells you whether bids are too high, follow-up's too slow,
+//     or a lead source isn't qualified.
+//   - Now: dropdown required, "Other" reveals a free-text input
+//     also required. Mark Lost button stays disabled until valid.
+//   - The other path to Lost (drag-to-Lost zone) goes through this
+//     same modal, so closing the loophole here covers both.
+//
+// SOFT WARNING ON COMPLETED-WITH-$0:
+//   - handleStatusChange now intercepts when newStatus === Completed
+//     AND job.actual is null/0. Shows ConfirmDialog explaining the
+//     consequences (job-cost history gap, weakened lien-waiver
+//     paper trail) and offers a clear "Mark Complete Anyway" path
+//     for legitimate $0 favor jobs.
+//   - User can still mark a $0 job Complete — it just costs them
+//     one click and they understand what they're doing. Not a
+//     hard block; that would over-rotate.
+//
+// NO new dependencies.
+// ================================================================
 // NORTHSHORE OS v1.4.0 — Apr 27 2026 — Voice-to-text + QOL bundle
 //
 // CORE FEATURE: Voice-to-text on jobsite-relevant fields.
@@ -9558,11 +9594,19 @@ function ConvertLeadModal({ lead, onClose, onConvert }) {
 // ----------------------------------------------------------------
 function MarkLostModal({ lead, onClose, onMarkLost }) {
   const [reason, setReason] = useState("");
+  const [otherReason, setOtherReason] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // v1.4.1 — Reason now required. CRM hygiene: knowing WHY you
+  // lost is what tells you whether bids are too high, follow-up
+  // too slow, or lead source unqualified. "Optional" was a footgun.
+  const finalReason = reason === "Other" ? otherReason.trim() : reason;
+  const canSubmit = !!finalReason && !saving;
+
   const submit = async () => {
+    if (!canSubmit) return;
     setSaving(true);
-    await onMarkLost(lead, reason.trim());
+    await onMarkLost(lead, finalReason);
     setSaving(false);
   };
 
@@ -9589,14 +9633,16 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
 
         <div className="p-5 space-y-3">
             <p className="text-sm text-slate-300">
-              Capturing why you lost this one helps you spot patterns. Optional.
+              Why did you lose this one? Tracking patterns helps you
+              spot whether bids are too high, follow-up's too slow,
+              or a lead source isn't qualified.
             </p>
             <div>
               <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
-                Reason (optional)
+                Reason <span className="text-rose-400">*</span>
               </label>
               <Sel value={reason} onChange={(e) => setReason(e.target.value)}>
-                <option value="">— Choose or skip —</option>
+                <option value="">— Select a reason —</option>
                 <option value="Price">Price</option>
                 <option value="Timeline">Timeline</option>
                 <option value="Went with another contractor">Went with another contractor</option>
@@ -9604,9 +9650,22 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
                 <option value="No response">No response</option>
                 <option value="Out of service area">Out of service area</option>
                 <option value="Not a real lead">Not a real lead</option>
-                <option value="Other">Other</option>
+                <option value="Other">Other (specify below)</option>
               </Sel>
             </div>
+            {reason === "Other" && (
+              <div>
+                <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
+                  Specify <span className="text-rose-400">*</span>
+                </label>
+                <Inp
+                  value={otherReason}
+                  onChange={(e) => setOtherReason(e.target.value)}
+                  placeholder="What happened?"
+                  autoFocus
+                />
+              </div>
+            )}
           </div>
 
           <div className="p-5 border-t border-slate-800 flex items-center justify-end gap-2">
@@ -9618,8 +9677,8 @@ function MarkLostModal({ lead, onClose, onMarkLost }) {
             </Btn>
             <Btn
               onClick={submit}
-              disabled={saving}
-              className="btn-polished btn-rose"
+              disabled={!canSubmit}
+              className={canSubmit ? "btn-polished btn-rose" : "btn-polished btn-muted"}
             >
               {saving ? <><BtnSpinner />Saving...</> : <><XCircle className="w-4 h-4 mr-1.5" />Mark Lost</>}
             </Btn>
@@ -11467,6 +11526,24 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
   // Smart status-change handler — warns if the status change makes the job
   // disappear from the current filter view (the "where did my job go?" footgun)
   const handleStatusChange = useCallback(async (job, newStatus) => {
+    // v1.4.1 — Soft warning when marking Complete with no actuals.
+    // Catches the "marked done but never logged hours/materials"
+    // pattern. Common with family-favor jobs (e.g. grandmother's shed)
+    // where you may forget to log because no money's involved.
+    // Either way, you want a defensible audit trail.
+    if (newStatus === "Completed" && (!job.actual || job.actual === 0)) {
+      const ok = await confirm({
+        title: "Mark Complete with $0 actual?",
+        message:
+          `"${job.name}" has no logged hours, materials, or costs. ` +
+          "Complete jobs without actuals create gaps in your job-cost history " +
+          "(useful for future bidding) and weaken the lien-waiver paper trail. " +
+          "\n\nIf this was a $0 favor job, that's fine — confirm to continue. " +
+          "Otherwise, log time/materials first, then mark Complete.",
+        confirmText: "Mark Complete Anyway",
+      });
+      if (!ok) return;
+    }
     await updateJob(job.id, { status: newStatus });
     if (filter !== "All" && filter !== newStatus) {
       toast.info(
@@ -11476,7 +11553,7 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
     } else {
       toast.success(`Marked ${newStatus}`);
     }
-  }, [updateJob, filter, toast]);
+  }, [updateJob, filter, toast, confirm]);
 
   const handleGenerateChangeOrder = useCallback((job) => {
     if (!coDescription.trim() || !coAmount) {
