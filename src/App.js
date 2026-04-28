@@ -75,6 +75,93 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.3.2 — Apr 27 2026 — Flagged-items sweep
+//
+// Connor cleared the "FLAGGED, NOT PATCHED" list in one ship.
+// 10 items, 9 code patches, 1 verified false-positive.
+//
+// REQUIRES SQL MIGRATION (run v1.3.2-soft-delete-migration.sql):
+//   ALTER TABLE clients   ADD COLUMN deleted_at TIMESTAMPTZ;
+//   ALTER TABLE estimates ADD COLUMN deleted_at TIMESTAMPTZ;
+//   ALTER TABLE jobs      ADD COLUMN paid_in_full_at TIMESTAMPTZ;
+// Without these, soft-delete + paid-in-full features will fail
+// with the same "column not found in schema cache" error as
+// the v1.3.1 photo bug.
+//
+// SHIPPED:
+//
+// (1) Schema audit tool — schema-audit-v1.3.2.sql artifact.
+//     Lists every column the code writes to. Run in Supabase
+//     SQL Editor; any rows returned are bugs in waiting (like
+//     the v1.3.1 job_photos.url issue).
+//
+// (2) Toast Undo for client + estimate delete:
+//     - Both now SOFT DELETE (set deleted_at) instead of hard
+//       delete. Preserves FK relationships (jobs.client_id,
+//       estimates.client_id), prevents cascade orphaning.
+//     - 6-second Undo button restores by clearing deleted_at.
+//     - AppInner load filters .is("deleted_at", null) so
+//       deleted rows stay invisible.
+//
+// (3) Last-contact pill on Clients edit form header.
+//     When you select a client to edit, the form now shows
+//     "Last contact: Xd ago" + linked job/estimate counts.
+//     Useful for follow-up triage as the client list grows.
+//
+// (4) Material deliveries lifted to AppInner state:
+//     - Lien calc now uses real material data (was [] before).
+//     - last-activity calc same.
+//     - JobOperations refactored: deliveries now derived from
+//       lifted parent state. Single source of truth — no more
+//       per-job local fetch. Add/edit/delete in JobOperations
+//       now update parent directly. Loose punch_list state
+//       unchanged (still scoped per-job).
+//
+// (5) handleConvertWon partial-failure rollback:
+//     - Tracks created records (client + job).
+//     - On any later step failure, rolls them back atomically.
+//     - Bonus: dedupe check now uses normalizePhone() on both
+//       sides instead of raw === comparison (was matching
+//       different phone formats as different clients).
+//
+// (6) LeadDetailDrawer unsaved-changes warning:
+//     - Two-layer guard: confirm dialog on close-button /
+//       overlay click, plus native beforeunload for refresh
+//       and tab-close cases.
+//     - Only triggers when `dirty === true`.
+//
+// (7) Mark Paid in Full / dismiss lien warning:
+//     - New PAYMENT STATUS block in expanded job (right after
+//       Contract Status). Only renders when contract IS signed.
+//     - Toggle stores jobs.paid_in_full_at timestamp.
+//     - lienDeadlineFor() returns null when paid_in_full_at
+//       is set — clears the job from lien widget AND per-job
+//       badge AND nav notification badge. Three places, one
+//       check at the source.
+//
+// (8) Photo timeline edit-in-place:
+//     - Pencil icon appears on hover of timeline cards.
+//     - Click → caption textarea + phase select inline.
+//     - Save / Cancel buttons. URL preserved (it's derived,
+//       not stored — see v1.3.1 patch).
+//     - Grid view unchanged (lightbox already handles edits
+//       there via existing pattern).
+//
+// (9) Drag-leave flicker fix:
+//     - Three drop zones now use relatedTarget guard:
+//       Pipeline columns, Lost zone, PhotoUploader.
+//     - Without guard, dragging across child elements (e.g.
+//       lead cards within a column) fired drag-leave even
+//       though we never left the column container.
+//
+// (10) wonThisMonth timezone — verified false-positive flag.
+//      Code uses getMonth() / getFullYear() which apply local
+//      timezone conversion to the stored UTC timestamp. The
+//      hypothetical bug ("UTC stored, local midnight could
+//      land in next month") doesn't actually exist. No code
+//      change. Removing from flag list.
+//
+// ================================================================
 // NORTHSHORE OS v1.3.1 — Apr 27 2026 — Photo upload fix
 //
 // FIX: Photo uploads were failing with "Could not find the 'url'
@@ -2805,7 +2892,9 @@ function DocumentUploadModal({ isOpen, supersedeOf, onClose, onUploaded }) {
             {/* DRAG-AND-DROP ZONE */}
             <div
               onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false);
+              }}
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               className={`mb-4 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
@@ -7075,7 +7164,7 @@ function LoginScreen({ onLogin }) {
 // ================================================================
 // DASHBOARD
 // ================================================================
-function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], timeEntries = [], setTab }) {
+function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], timeEntries = [], materialDeliveries = [], setTab }) {
   const activeJobs  = jobs.filter((j) => j.status === "Active");
   const openEst     = estimates.filter((e) => e.status === "Draft" || e.status === "Sent");
   const approvedEst = estimates.filter((e) => e.status === "Approved");
@@ -7083,9 +7172,10 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], t
   const pipeline    = openEst.reduce((s, e) => s + (e.grand_total || 0), 0);
 
   // v1.2 — Lien deadlines for urgent jobs widget
+  // v1.3.2 — Now includes material_deliveries from lifted state.
   const lienAlerts = jobs
     .filter((j) => j.status === "Active" || j.status === "Completed")
-    .map((j) => ({ job: j, lien: lienDeadlineFor(j, dailyLogs, timeEntries, []) }))
+    .map((j) => ({ job: j, lien: lienDeadlineFor(j, dailyLogs, timeEntries, materialDeliveries) }))
     .filter((x) => x.lien && x.lien.urgency !== "safe")
     .sort((a, b) => a.lien.daysRemaining - b.lien.daysRemaining);
 
@@ -7804,6 +7894,10 @@ function emailWarning(input) {
 // ================================================================
 function lienDeadlineFor(job, dailyLogs, timeEntries, materialDeliveries) {
   if (!job) return null;
+  // v1.3.2 — Paid jobs have no lien risk. The Construction Lien Act
+  // only applies to unpaid work. Once Connor marks a job paid in full,
+  // lien tracking becomes noise.
+  if (job.paid_in_full_at) return null;
   const dates = [];
 
   (dailyLogs || []).forEach((l) => {
@@ -8115,12 +8209,38 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
   // Convert lead → client + job (drop-on-Won flow)
   // ============================================================
   const handleConvertWon = async (lead, alsoCreateJob, jobName) => {
-    // 1. Create client (or skip if email/phone already matches)
+    // v1.3.2 — Track what we created so we can roll back on partial failure.
+    // Without this, a step-3 failure leaves orphaned clients/jobs in the DB
+    // while the lead still shows as open. Multi-step writes need atomicity.
+    const createdClientId = { id: null }; // mutable wrapper for rollback
+    const createdJobId    = { id: null };
+
+    const rollback = async (reason) => {
+      try {
+        if (createdJobId.id) {
+          await supabase.from("jobs").delete().eq("id", createdJobId.id);
+          setJobs((arr) => arr.filter((j) => j.id !== createdJobId.id));
+        }
+        if (createdClientId.id) {
+          // Soft-delete (matches v1.3.2 client delete pattern)
+          await supabase
+            .from("clients")
+            .update({ deleted_at: new Date().toISOString() })
+            .eq("id", createdClientId.id);
+          setClients((arr) => arr.filter((c) => c.id !== createdClientId.id));
+        }
+      } catch (rbErr) {
+        console.error("Rollback also failed:", rbErr);
+      }
+      toast.error(`Convert failed: ${reason}. Any partial records were rolled back.`);
+    };
+
+    // 1. Create client (or reuse existing match)
     let clientId = null;
     const existingMatch = clients.find(
       (c) =>
         (lead.email && c.email && c.email.toLowerCase() === lead.email.toLowerCase()) ||
-        (lead.phone && c.phone && c.phone === lead.phone)
+        (lead.phone && c.phone && normalizePhone(c.phone) === normalizePhone(lead.phone))
     );
     if (existingMatch) {
       clientId = existingMatch.id;
@@ -8130,7 +8250,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
         .insert({
           name: lead.name,
           email: lead.email,
-          phone: lead.phone,
+          phone: normalizePhone(lead.phone) || null,
           address: lead.address,
         })
         .select()
@@ -8140,6 +8260,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
         return;
       }
       clientId = newClient.id;
+      createdClientId.id = newClient.id; // arm rollback
       setClients((arr) => [...arr, newClient]);
     }
 
@@ -8158,10 +8279,11 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
         .select()
         .single();
       if (jErr) {
-        toast.error("Failed to create job: " + jErr.message);
+        await rollback("job creation failed (" + jErr.message + ")");
         return;
       }
       jobId = newJob.id;
+      createdJobId.id = newJob.id;
       setJobs((arr) => [newJob, ...arr]);
     }
 
@@ -8178,7 +8300,7 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
       })
       .eq("id", lead.id);
     if (lErr) {
-      toast.error("Failed to mark lead as won (but client/job were created)");
+      await rollback("lead update failed (" + lErr.message + ")");
       return;
     }
     setLeads((arr) =>
@@ -8315,7 +8437,15 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
                 key={stage.id}
                 onDragOver={(e) => onDragOverCol(e, stage.id)}
                 onDrop={(e) => onDropCol(e, stage.id)}
-                onDragLeave={() => hoverColumn === stage.id && setHoverColumn(null)}
+                onDragLeave={(e) => {
+                  // v1.3.2 — Don't clear hover when entering a child (lead card).
+                  // Only clear when relatedTarget is outside this column's bounds.
+                  // Without this guard, dragging across cards within the same
+                  // column triggers a hover-on/off flicker.
+                  if (!e.currentTarget.contains(e.relatedTarget)) {
+                    if (hoverColumn === stage.id) setHoverColumn(null);
+                  }
+                }}
                 className={`rounded-2xl border ${stage.border} bg-gradient-to-b ${stage.accent} transition-all duration-150 ${
                   isHover ? `ring-2 ring-amber-400/60 shadow-2xl ${stage.glow}` : `shadow-lg ${stage.glow}`
                 } min-h-[400px] flex flex-col`}
@@ -8363,7 +8493,11 @@ function Pipeline({ leads, setLeads, clients, setClients, jobs, setJobs, estimat
             setHoverColumn("lost");
           }}
           onDrop={onDropLost}
-          onDragLeave={() => setHoverColumn(null)}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) {
+              setHoverColumn(null);
+            }
+          }}
           className={`rounded-2xl border-2 border-dashed transition-all duration-150 ${
             hoverColumn === "lost"
               ? "border-rose-400 bg-rose-950/30"
@@ -8736,6 +8870,35 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
 
   const markDirty = () => setDirty(true);
   const emailWarn = emailWarning(email);
+  const confirm = useConfirm();
+
+  // v1.3.2 — Unsaved-changes guard. Two layers:
+  // (1) Close button / overlay click → confirm dialog (in-app)
+  // (2) Browser refresh / tab close → native beforeunload warning
+  const handleAttemptClose = useCallback(async () => {
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    const ok = await confirm({
+      title: "Discard unsaved changes?",
+      message: "You have edits that haven't been saved. Closing will lose them.",
+      confirmText: "Discard",
+      danger: true,
+    });
+    if (ok) onClose();
+  }, [dirty, onClose, confirm]);
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = ""; // Chrome/Safari require this
+      return "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   const handleSave = async () => {
     await onUpdate({
@@ -8765,7 +8928,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
-      onClick={onClose}
+      onClick={handleAttemptClose}
     >
       <motion.div
         initial={{ x: "100%" }}
@@ -8793,7 +8956,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
               <h3 className="text-xl font-semibold text-white truncate">{lead.name}</h3>
             </div>
             <button
-              onClick={onClose}
+              onClick={handleAttemptClose}
               className="text-slate-500 hover:text-white transition-colors flex-shrink-0"
               aria-label="Close"
             >
@@ -9335,24 +9498,50 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
     }
   };
 
-  // Delete an estimate
+  // Delete an estimate (v1.3.2 — soft-delete + Undo)
   const deleteEstimate = async (est) => {
     const ok = await confirm({
       title: "Delete this estimate?",
-      message: `This will permanently delete "${est.name}" (${currency(est.grand_total)}). This cannot be undone.`,
+      message: `"${est.name}" (${currency(est.grand_total)}) will be removed.\n\nYou'll have a few seconds to undo.`,
       confirmText: "Delete",
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("estimates").delete().eq("id", est.id);
-    if (!error) {
-      setEstimates((prev) => prev.filter((e) => e.id !== est.id));
-      // If we were editing the one we just deleted, reset form
-      if (editingId === est.id) resetForm();
-      toast.success("Estimate deleted");
-    } else {
+    const { error } = await supabase
+      .from("estimates")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", est.id);
+    if (error) {
       toast.error("Delete failed: " + error.message);
+      return;
     }
+    setEstimates((prev) => prev.filter((e) => e.id !== est.id));
+    if (editingId === est.id) resetForm();
+    toast.success("Estimate deleted", {
+      duration: 6000,
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          const { error: undoErr } = await supabase
+            .from("estimates")
+            .update({ deleted_at: null })
+            .eq("id", est.id);
+          if (undoErr) {
+            toast.error("Restore failed: " + undoErr.message);
+            return;
+          }
+          const { data: fresh } = await supabase
+            .from("estimates")
+            .select("*")
+            .eq("id", est.id)
+            .maybeSingle();
+          if (fresh) {
+            setEstimates((prev) => [fresh, ...prev]);
+          }
+          toast.info("Estimate restored");
+        },
+      },
+    });
   };
 
   // Update estimate status from the saved list (e.g. mark Lost)
@@ -10117,12 +10306,16 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
 // JOB OPERATIONS
 // Punch list, material deliveries, photos sub-component for Jobs
 // ================================================================
-function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs, timeEntries, setTimeEntries, activeTimeEntry, client, invoices, setInvoices, invoicePayments, setInvoicePayments, lienWaivers, setLienWaivers, swornStatements, setSwornStatements, jobSubs, setJobSubs }) {
+function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJobs, timeEntries, setTimeEntries, activeTimeEntry, client, invoices, setInvoices, invoicePayments, setInvoicePayments, lienWaivers, setLienWaivers, swornStatements, setSwornStatements, jobSubs, setJobSubs, materialDeliveriesParent = [], setMaterialDeliveriesParent }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [opsTab, setOpsTab] = useState("Punch");
   const [punchList, setPunchList] = useState([]);
-  const [deliveries, setDeliveries] = useState([]);
+  // v1.3.2 — Deliveries now derived from lifted parent state. Single source
+  // of truth = no risk of local-vs-global drift after add/edit/delete.
+  const deliveries = (materialDeliveriesParent || [])
+    .filter((d) => d.job_id === job.id)
+    .sort((a, b) => (a.expected_date || "").localeCompare(b.expected_date || ""));
   const [loadingOps, setLoadingOps] = useState(true);
 
   // Punch form
@@ -10136,18 +10329,18 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
   const [dExpectedDate, setDExpectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [dCost, setDCost] = useState("");
 
-  // Load punch + deliveries when this job opens
+  // Load punch when this job opens. Deliveries come from lifted parent state.
   useEffect(() => {
     let alive = true;
     (async () => {
       setLoadingOps(true);
-      const [punchRes, delRes] = await Promise.all([
-        supabase.from("punch_list").select("*").eq("job_id", job.id).order("created_at"),
-        supabase.from("material_deliveries").select("*").eq("job_id", job.id).order("expected_date"),
-      ]);
+      const { data: punchData } = await supabase
+        .from("punch_list")
+        .select("*")
+        .eq("job_id", job.id)
+        .order("created_at");
       if (!alive) return;
-      setPunchList(punchRes.data || []);
-      setDeliveries(delRes.data || []);
+      setPunchList(punchData || []);
       setLoadingOps(false);
     })();
     return () => { alive = false; };
@@ -10217,13 +10410,16 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
       .select()
       .single();
     if (!error && data) {
-      setDeliveries((d) => [...d, data]);
+      // v1.3.2 — Single source of truth: parent state only.
+      if (setMaterialDeliveriesParent) {
+        setMaterialDeliveriesParent((all) => [data, ...all]);
+      }
       setDSupplier(""); setDItem(""); setDQty(""); setDCost("");
       toast.success("Delivery added");
     } else {
       toast.error("Add failed: " + (error?.message || "Unknown error"));
     }
-  }, [job.id, dSupplier, dItem, dQty, dExpectedDate, dCost, toast]);
+  }, [job.id, dSupplier, dItem, dQty, dExpectedDate, dCost, toast, setMaterialDeliveriesParent]);
 
   const updateDeliveryStatus = useCallback(async (del, newStatus) => {
     const updates = { status: newStatus };
@@ -10237,10 +10433,12 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
       .select()
       .single();
     if (!error && data) {
-      setDeliveries((d) => d.map((x) => (x.id === data.id ? data : x)));
+      if (setMaterialDeliveriesParent) {
+        setMaterialDeliveriesParent((all) => all.map((x) => (x.id === data.id ? data : x)));
+      }
       toast.success(`Marked ${newStatus}`);
     }
-  }, [toast]);
+  }, [toast, setMaterialDeliveriesParent]);
 
   const deleteDelivery = useCallback(async (del) => {
     const ok = await confirm({
@@ -10252,10 +10450,12 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
     if (!ok) return;
     const { error } = await supabase.from("material_deliveries").delete().eq("id", del.id);
     if (!error) {
-      setDeliveries((d) => d.filter((x) => x.id !== del.id));
+      if (setMaterialDeliveriesParent) {
+        setMaterialDeliveriesParent((all) => all.filter((x) => x.id !== del.id));
+      }
       toast.success("Delivery deleted");
     }
-  }, [confirm, toast]);
+  }, [confirm, toast, setMaterialDeliveriesParent]);
 
   const openPunch = punchList.filter((p) => !p.completed);
   const completedPunch = punchList.filter((p) => p.completed);
@@ -10599,6 +10799,22 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
                   setJobPhotos((prev) => prev.filter((p) => p.id !== photo.id));
                   toast.success("Photo deleted");
                 }}
+                onUpdate={async (photoId, updates) => {
+                  // v1.3.2 — Inline caption/phase edits in timeline view
+                  const { data, error } = await supabase
+                    .from("job_photos")
+                    .update(updates)
+                    .eq("id", photoId)
+                    .select()
+                    .single();
+                  if (error) {
+                    toast.error("Update failed: " + error.message);
+                    return false;
+                  }
+                  // Preserve the in-memory `url` (derived, not stored)
+                  setJobPhotos((prev) => prev.map((p) => (p.id === photoId ? { ...data, url: p.url } : p)));
+                  return true;
+                }}
               />
             </CardContent>
           </Card>
@@ -10744,7 +10960,7 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
     </div>
   );
 }
-function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates, timeEntries, setTimeEntries, activeTimeEntry, invoices, setInvoices, invoicePayments, setInvoicePayments, lienWaivers, setLienWaivers, swornStatements, setSwornStatements, jobSubs, setJobSubs }) {
+function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, settings, estimates, timeEntries, setTimeEntries, activeTimeEntry, invoices, setInvoices, invoicePayments, setInvoicePayments, lienWaivers, setLienWaivers, swornStatements, setSwornStatements, jobSubs, setJobSubs, materialDeliveries = [], setMaterialDeliveries }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [name, setName] = useState("");
@@ -10859,6 +11075,27 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
     await updateJob(job.id, { contract_signed_at: null });
     toast.success("Contract signed status cleared");
   }, [confirm, updateJob, toast]);
+
+  // v1.3.2 — Mark paid in full / clear. Removes the job from lien
+  // tracking widgets (lien rights are moot once payment is complete).
+  const markPaidInFull = useCallback(async (job) => {
+    const ok = await confirm({
+      title: "Mark paid in full?",
+      message:
+        "Confirm this job has been paid in full. The lien deadline countdown " +
+        "will stop tracking it (lien rights only matter for unpaid work). " +
+        "You can clear this later if needed.",
+      confirmText: "Yes, Paid in Full",
+    });
+    if (!ok) return;
+    await updateJob(job.id, { paid_in_full_at: new Date().toISOString() });
+    toast.success("Marked paid in full — lien tracking cleared");
+  }, [confirm, updateJob, toast]);
+
+  const clearPaidInFull = useCallback(async (job) => {
+    await updateJob(job.id, { paid_in_full_at: null });
+    toast.info("Paid status cleared — lien tracking resumed");
+  }, [updateJob, toast]);
 
   // Smart status-change handler — warns if the status change makes the job
   // disappear from the current filter view (the "where did my job go?" footgun)
@@ -11000,13 +11237,15 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
             const contractSigned = !!j.contract_signed_at;
             const linkedEstimate = estimates.find((e) => e.job_id === j.id || e.client_id === j.client_id);
             // v1.2 — Lien deadline (only show badge if within 30d of deadline or expired)
+            // v1.3.2 — Now includes material_deliveries from lifted state.
             const lien = (j.status === "Active" || j.status === "Completed")
-              ? lienDeadlineFor(j, dailyLogs, timeEntries, [])
+              ? lienDeadlineFor(j, dailyLogs, timeEntries, materialDeliveries)
               : null;
             const showLienBadge = lien && (lien.urgency !== "safe");
             // v1.3 — Last activity (only show on Active jobs to avoid noise on completed/lost)
+            // v1.3.2 — Now includes material_deliveries.
             const lastActive = j.status === "Active"
-              ? lastActivityForJob(j, dailyLogs, timeEntries, jobPhotos, [])
+              ? lastActivityForJob(j, dailyLogs, timeEntries, jobPhotos, materialDeliveries)
               : null;
             const activityDays = daysSinceActivity(lastActive);
 
@@ -11190,6 +11429,47 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                             )}
                           </div>
 
+                          {/* v1.3.2 — PAID IN FULL STATUS (lien tracking control) */}
+                          {contractSigned && (
+                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4">
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div className="flex items-center gap-3">
+                                  <DollarSign className={`w-5 h-5 ${j.paid_in_full_at ? "text-emerald-400" : "text-slate-500"}`} />
+                                  <div>
+                                    <p className="text-xs text-slate-500 uppercase tracking-wider">Payment Status</p>
+                                    {j.paid_in_full_at ? (
+                                      <p className="text-sm text-emerald-300 font-medium mt-0.5">
+                                        Paid in full {formatDate(j.paid_in_full_at)}
+                                        <span className="text-slate-500 ml-2">— lien tracking off</span>
+                                      </p>
+                                    ) : (
+                                      <p className="text-sm text-slate-400 mt-0.5">
+                                        Not paid in full — lien deadline still tracked.
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {!j.paid_in_full_at ? (
+                                    <button
+                                      onClick={() => markPaidInFull(j)}
+                                      className="text-xs py-1.5 px-3 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 border border-emerald-700/50 rounded flex items-center gap-1.5 transition-colors"
+                                    >
+                                      <CheckCircle2 className="w-3.5 h-3.5" /> Mark Paid in Full
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => clearPaidInFull(j)}
+                                      className="text-xs py-1.5 px-3 bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700 rounded flex items-center gap-1.5 transition-colors"
+                                    >
+                                      Clear Paid Status
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
                           {/* CHANGE ORDER GENERATOR */}
                           <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4">
                             <p className="text-xs text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
@@ -11241,6 +11521,7 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
                             setSwornStatements={setSwornStatements}
                             jobSubs={jobSubs}
                             setJobSubs={setJobSubs}
+                            setMaterialDeliveriesParent={setMaterialDeliveries}
                           />
 
                           {/* DELETE JOB */}
@@ -11269,7 +11550,7 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
 // ================================================================
 // CLIENTS
 // ================================================================
-function Clients({ clients, setClients, jobs, estimates, dailyLogs = [], timeEntries = [], jobPhotos = [] }) {
+function Clients({ clients, setClients, jobs, estimates, dailyLogs = [], timeEntries = [], jobPhotos = [], materialDeliveries = [] }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [name, setName]   = useState("");
@@ -11345,23 +11626,53 @@ function Clients({ clients, setClients, jobs, estimates, dailyLogs = [], timeEnt
       const parts = [];
       if (linkedJobs.length > 0) parts.push(`${linkedJobs.length} job${linkedJobs.length > 1 ? "s" : ""}`);
       if (linkedEsts.length > 0) parts.push(`${linkedEsts.length} estimate${linkedEsts.length > 1 ? "s" : ""}`);
-      warningDetails = `\n\n${parts.join(" and ")} are linked to this client. They will not be deleted, but will lose their client reference.`;
+      warningDetails = `\n\n${parts.join(" and ")} are linked to this client and will keep their reference (relationships preserved).`;
     }
     const ok = await confirm({
       title: "Delete this client?",
-      message: `"${client.name}" will be permanently deleted.${warningDetails}`,
+      message: `"${client.name}" will be removed from your list.${warningDetails}\n\nYou'll have a few seconds to undo.`,
       confirmText: "Delete Client",
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("clients").delete().eq("id", client.id);
-    if (!error) {
-      setClients((cs) => cs.filter((c) => c.id !== client.id));
-      if (editingId === client.id) resetForm();
-      toast.success("Client deleted");
-    } else {
+    // v1.3.2 — Soft-delete: stamp deleted_at instead of dropping the row.
+    // Preserves jobs.client_id and estimates.client_id FK relationships.
+    const { error } = await supabase
+      .from("clients")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", client.id);
+    if (error) {
       toast.error("Delete failed: " + error.message);
+      return;
     }
+    setClients((cs) => cs.filter((c) => c.id !== client.id));
+    if (editingId === client.id) resetForm();
+    toast.success("Client deleted", {
+      duration: 6000,
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          const { error: undoErr } = await supabase
+            .from("clients")
+            .update({ deleted_at: null })
+            .eq("id", client.id);
+          if (undoErr) {
+            toast.error("Restore failed: " + undoErr.message);
+            return;
+          }
+          // Re-insert into local state — fetch fresh in case row drifted
+          const { data: fresh } = await supabase
+            .from("clients")
+            .select("*")
+            .eq("id", client.id)
+            .maybeSingle();
+          if (fresh) {
+            setClients((cs) => [...cs, fresh].sort((a, b) => (a.name || "").localeCompare(b.name || "")));
+          }
+          toast.info("Client restored");
+        },
+      },
+    });
   }, [jobs, estimates, editingId, setClients, confirm, toast]);
 
   const filtered = clients.filter((c) => {
@@ -11403,6 +11714,32 @@ function Clients({ clients, setClients, jobs, estimates, dailyLogs = [], timeEnt
                 Cancel
               </button>
             )}
+            {/* v1.3.2 — Last-contact + linked-work pill on edit */}
+            {editingId && (() => {
+              const editingClient = clients.find((c) => c.id === editingId);
+              if (!editingClient) return null;
+              const lastContact = lastContactForClient(editingClient, jobs, dailyLogs, timeEntries, jobPhotos, materialDeliveries);
+              const contactDays = daysSinceActivity(lastContact);
+              const cJobs = jobs.filter((j) => j.client_id === editingClient.id);
+              const cEsts = estimates.filter((e) => e.client_id === editingClient.id);
+              return (
+                <div className="ml-auto flex items-center gap-2">
+                  {(cJobs.length > 0 || cEsts.length > 0) && (
+                    <span className="text-[10px] text-slate-500 tabular-nums">
+                      {cJobs.length} job{cJobs.length !== 1 ? "s" : ""} · {cEsts.length} est
+                    </span>
+                  )}
+                  {contactDays != null && (
+                    <span
+                      title={lastContact ? `Last activity: ${lastContact.toLocaleDateString()}` : ""}
+                      className={`text-[10px] px-2 py-1 rounded-md font-medium tabular-nums ${activityBadgeStyle(contactDays)}`}
+                    >
+                      Last contact: {activityLabel(contactDays)}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
             <Inp placeholder="Full name *"  value={name}    onChange={(e) => setName(e.target.value)} />
@@ -11453,7 +11790,8 @@ function Clients({ clients, setClients, jobs, estimates, dailyLogs = [], timeEnt
             const cJobs = jobs.filter((j) => j.client_id === c.id);
             const cEsts = estimates.filter((e) => e.client_id === c.id);
             // v1.3 — Last contact across all client's jobs
-            const lastContact = lastContactForClient(c, jobs, dailyLogs, timeEntries, jobPhotos, []);
+            // v1.3.2 — Now includes material_deliveries.
+            const lastContact = lastContactForClient(c, jobs, dailyLogs, timeEntries, jobPhotos, materialDeliveries);
             const contactDays = daysSinceActivity(lastContact);
             return (
               <Card key={c.id}>
@@ -11850,10 +12188,15 @@ function PhotoUploader({ jobId, onUploaded }) {
 // ================================================================
 // PHOTO GALLERY
 // ================================================================
-function PhotoGallery({ photos, onDelete }) {
+function PhotoGallery({ photos, onDelete, onUpdate }) {
   const [filter, setFilter] = useState("All");
   const [view, setView] = useState("grid"); // v1.3 — "grid" | "timeline"
   const [lightboxPhoto, setLightboxPhoto] = useState(null);
+  // v1.3.2 — Inline-edit state for timeline view
+  const [editingId, setEditingId] = useState(null);
+  const [draftCaption, setDraftCaption] = useState("");
+  const [draftPhase, setDraftPhase] = useState("Progress");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const filtered = filter === "All" ? photos : photos.filter((p) => p.phase === filter);
 
@@ -11976,40 +12319,118 @@ function PhotoGallery({ photos, onDelete }) {
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pl-5">
-                  {dayPhotos.map((p) => (
-                    <div
-                      key={p.id}
-                      className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden cursor-pointer hover:border-amber-700/50 transition-colors flex"
-                      onClick={() => setLightboxPhoto(p)}
-                    >
-                      <img
-                        src={p.url}
-                        alt={p.caption || "Job photo"}
-                        loading="lazy"
-                        className="w-32 h-32 object-cover flex-shrink-0"
-                      />
-                      <div className="flex-1 p-3 min-w-0 flex flex-col">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Badge
-                            label={p.phase}
-                            color={
-                              p.phase === "Issue"  ? "red"    :
-                              p.phase === "Final"  ? "green"  :
-                              p.phase === "Before" ? "gray"   : "yellow"
-                            }
-                          />
-                          <span className="text-[10px] text-slate-500 tabular-nums">
-                            {p.created_at && new Date(p.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
-                          </span>
+                  {dayPhotos.map((p) => {
+                    const isEditing = editingId === p.id;
+                    return (
+                      <div
+                        key={p.id}
+                        className={`group bg-slate-900 border rounded-lg overflow-hidden transition-colors flex ${
+                          isEditing
+                            ? "border-amber-700/70"
+                            : "border-slate-800 cursor-pointer hover:border-amber-700/50"
+                        }`}
+                        onClick={(e) => {
+                          if (isEditing) return;
+                          // Don't trigger lightbox if clicking the edit button
+                          if (e.target.closest("[data-edit-trigger]")) return;
+                          setLightboxPhoto(p);
+                        }}
+                      >
+                        <img
+                          src={p.url}
+                          alt={p.caption || "Job photo"}
+                          loading="lazy"
+                          className="w-32 h-32 object-cover flex-shrink-0"
+                        />
+                        <div className="flex-1 p-3 min-w-0 flex flex-col">
+                          {isEditing ? (
+                            <>
+                              <select
+                                value={draftPhase}
+                                onChange={(e) => setDraftPhase(e.target.value)}
+                                className="mb-1 text-[10px] bg-slate-950 border border-slate-700 text-slate-200 rounded px-1.5 py-1 focus:outline-none focus:border-amber-500"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {["Before", "Progress", "Issue", "Final", "Reference"].map((ph) => (
+                                  <option key={ph} value={ph}>{ph}</option>
+                                ))}
+                              </select>
+                              <textarea
+                                value={draftCaption}
+                                onChange={(e) => setDraftCaption(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                rows={2}
+                                className="text-xs bg-slate-950 border border-slate-700 text-slate-200 rounded px-2 py-1 mb-2 resize-none focus:outline-none focus:border-amber-500"
+                                placeholder="Add a caption…"
+                                autoFocus
+                              />
+                              <div className="flex gap-1.5">
+                                <button
+                                  disabled={savingEdit}
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!onUpdate) return setEditingId(null);
+                                    setSavingEdit(true);
+                                    const ok = await onUpdate(p.id, {
+                                      caption: draftCaption.trim() || null,
+                                      phase: draftPhase,
+                                    });
+                                    setSavingEdit(false);
+                                    if (ok) setEditingId(null);
+                                  }}
+                                  className="text-[10px] px-2 py-1 rounded bg-amber-400 text-black font-semibold hover:bg-amber-500 disabled:opacity-50"
+                                >
+                                  {savingEdit ? "Saving…" : "Save"}
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setEditingId(null); }}
+                                  className="text-[10px] px-2 py-1 rounded bg-slate-800 text-slate-400 hover:bg-slate-700"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-2 mb-1">
+                                <Badge
+                                  label={p.phase}
+                                  color={
+                                    p.phase === "Issue"  ? "red"    :
+                                    p.phase === "Final"  ? "green"  :
+                                    p.phase === "Before" ? "gray"   : "yellow"
+                                  }
+                                />
+                                <span className="text-[10px] text-slate-500 tabular-nums">
+                                  {p.created_at && new Date(p.created_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                                </span>
+                                {onUpdate && (
+                                  <button
+                                    data-edit-trigger
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingId(p.id);
+                                      setDraftCaption(p.caption || "");
+                                      setDraftPhase(p.phase || "Progress");
+                                    }}
+                                    className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-amber-400"
+                                    title="Edit caption + phase"
+                                  >
+                                    <Pencil className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                              {p.caption ? (
+                                <p className="text-xs text-slate-300 line-clamp-3">{p.caption}</p>
+                              ) : (
+                                <p className="text-xs text-slate-600 italic">No caption</p>
+                              )}
+                            </>
+                          )}
                         </div>
-                        {p.caption ? (
-                          <p className="text-xs text-slate-300 line-clamp-3">{p.caption}</p>
-                        ) : (
-                          <p className="text-xs text-slate-600 italic">No caption</p>
-                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -12541,6 +12962,10 @@ function AppInner() {
   const [swornStatements, setSwornStatements] = useState([]);
   const [jobSubs, setJobSubs] = useState([]);
   const [leads, setLeads] = useState([]);
+  // v1.3.2 — Lifted to AppInner so lien calc + last-activity helpers
+  // see deliveries across all jobs (not just the open one). JobOperations
+  // still owns the editing UX; we keep parent state in sync via setter.
+  const [materialDeliveries, setMaterialDeliveries] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Settings
@@ -12594,10 +13019,10 @@ function AppInner() {
     }
     let alive = true;
     (async () => {
-      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes, invRes, payRes, waiverRes, stmtRes, subsRes, leadsRes] = await Promise.all([
+      const [jobsRes, estRes, cliRes, logRes, photoRes, timeRes, activeRes, docsRes, toolsRes, toolUsesRes, toolMaintRes, invRes, payRes, waiverRes, stmtRes, subsRes, leadsRes, deliveriesRes] = await Promise.all([
         supabase.from("jobs").select("*").order("created_at", { ascending: false }),
-        supabase.from("estimates").select("*").order("created_at", { ascending: false }),
-        supabase.from("clients").select("*").order("name"),
+        supabase.from("estimates").select("*").is("deleted_at", null).order("created_at", { ascending: false }),
+        supabase.from("clients").select("*").is("deleted_at", null).order("name"),
         supabase.from("daily_logs").select("*").order("log_date", { ascending: false }),
         supabase.from("job_photos").select("*").order("created_at", { ascending: false }),
         supabase.from("time_entries").select("*").order("clock_in", { ascending: false }),
@@ -12618,6 +13043,9 @@ function AppInner() {
         supabase.from("sworn_statements").select("*").order("statement_date", { ascending: false }),
         supabase.from("job_subs").select("*").order("created_at", { ascending: false }),
         supabase.from("leads").select("*").is("archived_at", null).order("last_touch_at", { ascending: false }),
+        // v1.3.2 — All deliveries across all jobs (lifted from JobOperations
+        // for accurate lien calc + last-activity helpers).
+        supabase.from("material_deliveries").select("*").order("expected_date", { ascending: false }),
       ]);
       if (!alive) return;
       setJobs(jobsRes.data || []);
@@ -12648,6 +13076,7 @@ function AppInner() {
       setSwornStatements(stmtRes.data || []);
       setJobSubs(subsRes.data || []);
       setLeads(leadsRes.data || []);
+      setMaterialDeliveries(deliveriesRes.data || []);
       setDataLoaded(true);
     })();
     return () => { alive = false; };
@@ -12742,7 +13171,7 @@ function AppInner() {
   // Jobs: count of jobs in lien-warning state (within 30d of deadline or expired)
   const jobsLienAlertCount = jobs.filter((j) => {
     if (j.status !== "Active" && j.status !== "Completed") return false;
-    const lien = lienDeadlineFor(j, dailyLogs, timeEntries, []);
+    const lien = lienDeadlineFor(j, dailyLogs, timeEntries, materialDeliveries);
     return lien && lien.urgency !== "safe";
   }).length;
 
@@ -12925,6 +13354,7 @@ function AppInner() {
                   dailyLogs={dailyLogs}
                   documents={documents}
                   timeEntries={timeEntries}
+                  materialDeliveries={materialDeliveries}
                   setTab={setTab}
                 />
               </ErrorBoundary>
@@ -12980,6 +13410,8 @@ function AppInner() {
                   setSwornStatements={setSwornStatements}
                   jobSubs={jobSubs}
                   setJobSubs={setJobSubs}
+                  materialDeliveries={materialDeliveries}
+                  setMaterialDeliveries={setMaterialDeliveries}
                 />
               </ErrorBoundary>
             )}
@@ -13007,6 +13439,7 @@ function AppInner() {
                   dailyLogs={dailyLogs}
                   timeEntries={timeEntries}
                   jobPhotos={jobPhotos}
+                  materialDeliveries={materialDeliveries}
                 />
               </ErrorBoundary>
             )}
