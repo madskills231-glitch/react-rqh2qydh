@@ -24,7 +24,9 @@ import {
   ExternalLink, Eye, EyeOff, ArrowRight, ArrowLeft, RefreshCw, MoreHorizontal,
   CloudSun, Thermometer, MapPin, Phone, Mail, Building2,
   // v1.1 Pipeline additions
-  GitBranch, Trophy, GripVertical, MessageSquare, UserPlus, Flame, Target
+  GitBranch, Trophy, GripVertical, MessageSquare, UserPlus, Flame, Target,
+  // v1.4 Voice + QOL
+  Mic, MicOff
 } from "lucide-react";
 import { supabase } from "./supabase";
 
@@ -74,6 +76,70 @@ import { supabase } from "./supabase";
 //   - Computed labor cost per job (settings.laborRate × actual hours)
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
+// ================================================================
+// NORTHSHORE OS v1.4.0 — Apr 27 2026 — Voice-to-text + QOL bundle
+//
+// CORE FEATURE: Voice-to-text on jobsite-relevant fields.
+// Uses the browser's native Web Speech API (free, on-device,
+// no API key required, no Whisper round-trip). Accuracy good
+// for construction vocabulary. Whisper fallback can be added
+// in v1.5 if accuracy issues surface.
+//
+// useVoiceInput hook + VoiceMicButton component:
+//   - Continuous mode (keeps listening through pauses)
+//   - Live interim transcript flows into target field while speaking
+//   - Final transcript captured on stop, appended to existing text
+//   - Pulsing red mic icon while recording
+//   - Gracefully hides if browser doesn't support (Firefox)
+//   - Auto-stops on extended silence per browser default
+//
+// Wired into:
+//   - Daily Log → Work Performed
+//   - Daily Log → Issues / Notes
+//   - Photo Caption (after upload)
+//   - Clock-out Session Notes
+//   - Manual Time Entry Notes
+//   - LeadDetailDrawer Notes (with markDirty integration)
+//   - AddLeadModal Notes
+//
+// Browser support: Chrome, Edge, Safari (iOS 14.5+) — Firefox
+// is flag-gated and treated as unsupported (mic button hides).
+//
+// QOL BUNDLE:
+//
+// AUTO-RESIZE TEXTAREAS:
+//   - New AutoTextarea primitive grows with content from minRows
+//     to maxRows, then scrolls. Replaces fixed-row textareas in
+//     Daily Log, Time Entry, and Clock-out flows.
+//
+// OPTIMISTIC UI ON PUNCH TOGGLE:
+//   - Checkbox flips locally before round-trip. Rolls back on
+//     server error with toast. Highest-frequency action in the
+//     field — eliminates 200-300ms perceived lag.
+//
+// UNSAVED-CHANGES INDICATOR:
+//   - LeadDetailDrawer header shows pulsing amber "Unsaved" pill
+//     when dirty. Visible without scrolling, regardless of where
+//     you are in the drawer body.
+//
+// SKELETON LOADING:
+//   - Initial data load now shows a skeleton mirroring the real
+//     layout (header + KPIs + content blocks), not a centered
+//     spinner. Perceptually faster — feels instant on second load.
+//
+// JOBS EMPTY STATE POLISH:
+//   - Differentiates "no jobs at all" vs "filter excludes results."
+//     Filter case shows a "Clear filters" CTA that resets both
+//     filter and search.
+//
+// GLOBAL KEYBOARD SHORTCUTS:
+//   - Esc: closes mobile nav (modals + drawers handle their own
+//     Esc internally already).
+//   - /: focuses the first visible search input on the active tab
+//     (only fires when not already typing).
+//
+// NO SQL CHANGES. No new dependencies. Web Speech API is built
+// into every supported browser.
 // ================================================================
 // NORTHSHORE OS v1.3.3 — Apr 27 2026 — Schema drift fix (code, not SQL)
 //
@@ -938,6 +1004,33 @@ function Sel({ className = "", children, ...props }) {
   );
 }
 
+// AutoTextarea — auto-resizes height to fit content. v1.4 QOL.
+// Eliminates fixed-row textareas that show 2 lines of a 5-line note.
+// minRows sets initial height; grows up to maxRows then scrolls.
+function AutoTextarea({ value, onChange, minRows = 2, maxRows = 12, className = "", ...props }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    // Each line is roughly 1.5em; cap height at maxRows
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    const maxPx = lineHeight * maxRows + 16; // 16px = padding
+    el.style.height = Math.min(el.scrollHeight, maxPx) + "px";
+  }, [value, maxRows]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={onChange}
+      rows={minRows}
+      className={`w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200
+        focus:outline-none focus:ring-2 focus:ring-amber-400/50 resize-none ${className}`}
+      {...props}
+    />
+  );
+}
+
 function Badge({ label, color }) {
   const colors = {
     green: "bg-emerald-900/50 text-emerald-300 border-emerald-700",
@@ -1211,6 +1304,179 @@ function ConfirmProvider({ children }) {
 
 function useConfirm() {
   return useContext(ConfirmContext).confirm;
+}
+
+// ================================================================
+// VOICE INPUT HOOK (v1.4)
+// Wraps the browser's Web Speech API (SpeechRecognition).
+// Free, on-device, no API key, no network round-trip.
+// Accuracy is good for jobsite-relevant vocabulary.
+//
+// Returns:
+//   supported   — boolean: browser supports the API
+//   listening   — boolean: currently capturing audio
+//   transcript  — interim + final results combined as a string
+//   start()     — begin capturing (auto-stops on silence per SpeechRecognition default)
+//   stop()      — manually halt
+//   reset()     — clear transcript
+//
+// Continuous mode is ON — keeps listening through pauses until
+// stop() called or browser auto-stops on extended silence.
+//
+// Browser support as of 2026:
+//   Chrome / Edge / Safari (iOS 14.5+) — native, works offline
+//   Firefox — flag-gated, treat as unsupported
+//   Mobile Chrome — works, but requires page interaction first
+// ================================================================
+function useVoiceInput({ continuous = true, lang = "en-US" } = {}) {
+  const SR = typeof window !== "undefined"
+    ? (window.SpeechRecognition || window.webkitSpeechRecognition)
+    : null;
+  const supported = !!SR;
+  const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const recognitionRef = useRef(null);
+  // Track final-vs-interim so we can build up across multiple recognition events
+  const finalBufferRef = useRef("");
+
+  const stop = useCallback(() => {
+    try {
+      recognitionRef.current?.stop();
+    } catch (e) { /* already stopped */ }
+    setListening(false);
+  }, []);
+
+  const reset = useCallback(() => {
+    finalBufferRef.current = "";
+    setTranscript("");
+  }, []);
+
+  const start = useCallback(() => {
+    if (!supported) return;
+    if (listening) return;
+    const recognition = new SR();
+    recognition.continuous = continuous;
+    recognition.interimResults = true;
+    recognition.lang = lang;
+    recognition.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          finalBufferRef.current += result[0].transcript;
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+      setTranscript(finalBufferRef.current + interim);
+    };
+    recognition.onerror = (event) => {
+      console.warn("Speech recognition error:", event.error);
+      setListening(false);
+    };
+    recognition.onend = () => {
+      setListening(false);
+    };
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setListening(true);
+    } catch (e) {
+      console.warn("Speech recognition start failed:", e);
+      setListening(false);
+    }
+  }, [SR, supported, listening, continuous, lang]);
+
+  // Cleanup on unmount
+  useEffect(() => () => stop(), [stop]);
+
+  return { supported, listening, transcript, start, stop, reset };
+}
+
+// ================================================================
+// VoiceMicButton — drop-in voice input control (v1.4)
+//
+// Wraps useVoiceInput in a single-button UI. Press to start,
+// press again to stop. Live transcript flows into onTranscript()
+// callback so the parent can update its text field state.
+//
+// Props:
+//   onTranscript(text)  — called continuously as words arrive.
+//                         Parent decides whether to append or replace.
+//   appendMode          — if true, appends to existing field on stop;
+//                         if false (default), replaces.
+//   currentValue        — used by appendMode to know what to add to.
+//   onChange(newValue)  — called when transcript completes (on stop).
+//   className           — optional positioning override
+//   title               — tooltip
+// ================================================================
+function VoiceMicButton({ onChange, currentValue = "", appendMode = true, className = "", title = "Voice input" }) {
+  const voice = useVoiceInput();
+  const startedFromValueRef = useRef("");
+
+  if (!voice.supported) {
+    // Don't render anything — gracefully degrade. No broken icon.
+    return null;
+  }
+
+  const toggle = () => {
+    if (voice.listening) {
+      voice.stop();
+      // Final write: combine the snapshot we started from with the captured transcript.
+      const captured = voice.transcript.trim();
+      if (captured) {
+        if (appendMode) {
+          const sep = startedFromValueRef.current && !startedFromValueRef.current.endsWith(" ") ? " " : "";
+          onChange(startedFromValueRef.current + sep + captured);
+        } else {
+          onChange(captured);
+        }
+      }
+      voice.reset();
+    } else {
+      // Capture the current value at start time so live updates stay correct
+      startedFromValueRef.current = appendMode ? (currentValue || "") : "";
+      voice.reset();
+      voice.start();
+    }
+  };
+
+  // Show live transcript by passing it up while listening
+  useEffect(() => {
+    if (!voice.listening) return;
+    const live = voice.transcript;
+    if (!live) return;
+    if (appendMode) {
+      const sep = startedFromValueRef.current && !startedFromValueRef.current.endsWith(" ") ? " " : "";
+      onChange(startedFromValueRef.current + sep + live);
+    } else {
+      onChange(live);
+    }
+  }, [voice.transcript, voice.listening, appendMode, onChange]);
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      className={`relative inline-flex items-center justify-center w-7 h-7 rounded-md transition-all flex-shrink-0 ${
+        voice.listening
+          ? "bg-rose-500 text-white shadow-lg shadow-rose-500/30"
+          : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-amber-400"
+      } ${className}`}
+      title={voice.listening ? "Stop listening" : title}
+      aria-label={voice.listening ? "Stop voice input" : "Start voice input"}
+    >
+      {voice.listening ? (
+        <>
+          <MicOff className="w-3.5 h-3.5" />
+          {/* Pulse animation for active recording */}
+          <span className="absolute inset-0 rounded-md animate-ping bg-rose-400/40" />
+        </>
+      ) : (
+        <Mic className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
 }
 
 // ================================================================
@@ -2553,13 +2819,15 @@ function ClockSessionMenu({ isOpen, activeEntry, jobName, elapsedMin, onClose, o
             </div>
 
             <div className="mb-4">
-              <label className="block text-xs text-slate-400 mb-1">Session notes (saved on clock out)</label>
-              <textarea
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs text-slate-400">Session notes (saved on clock out)</label>
+                <VoiceMicButton currentValue={notes} onChange={setNotes} appendMode title="Dictate session notes" />
+              </div>
+              <AutoTextarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                rows={3}
+                minRows={3}
                 placeholder="What you worked on..."
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
               />
             </div>
 
@@ -2688,13 +2956,15 @@ function ManualTimeEntryModal({ isOpen, jobId, jobName, existingEntry, onClose, 
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Notes</label>
-                <textarea
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs text-slate-400">Notes</label>
+                  <VoiceMicButton currentValue={notes} onChange={setNotes} appendMode title="Dictate notes" />
+                </div>
+                <AutoTextarea
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  rows={2}
+                  minRows={2}
                   placeholder="What you worked on..."
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
                 />
               </div>
             </div>
@@ -8871,9 +9141,17 @@ function AddLeadModal({ onClose, onAdd }) {
               />
             </div>
             <div>
-              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">
-                Notes
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs uppercase tracking-wide text-slate-400">
+                  Notes
+                </label>
+                <VoiceMicButton
+                  currentValue={notes}
+                  onChange={setNotes}
+                  appendMode
+                  title="Dictate notes"
+                />
+              </div>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
@@ -9003,7 +9281,7 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
           {/* Header */}
           <div className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-5 py-4 flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
                 {isLost ? (
                   <Badge label="Lost" color="rose" />
                 ) : (
@@ -9012,6 +9290,13 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
                 {days != null && (
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-md tabular-nums font-medium ${touchBadgeColor(days)}`}>
                     {days === 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`}
+                  </span>
+                )}
+                {/* v1.4 — Unsaved-changes indicator */}
+                {dirty && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold bg-amber-400/20 text-amber-300 border border-amber-700/50 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    Unsaved
                   </span>
                 )}
               </div>
@@ -9135,7 +9420,15 @@ function LeadDetailDrawer({ lead, clients, jobs, estimates, onClose, onUpdate, o
               />
             </div>
             <div>
-              <label className="text-xs uppercase tracking-wide text-slate-400 block mb-1">Notes</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs uppercase tracking-wide text-slate-400">Notes</label>
+                <VoiceMicButton
+                  currentValue={notes}
+                  onChange={(v) => { setNotes(v); markDirty(); }}
+                  appendMode
+                  title="Dictate notes"
+                />
+              </div>
               <textarea
                 value={notes}
                 onChange={(e) => { setNotes(e.target.value); markDirty(); }}
@@ -10430,16 +10723,26 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
   }, [job.id, pItem, pPriority, toast]);
 
   const togglePunch = useCallback(async (item) => {
+    // v1.4 — Optimistic update: flip the UI immediately, reconcile after.
+    // Punch toggles are the highest-frequency action in the field; a
+    // 200-300ms round-trip felt laggy. Flip first, rollback if Postgres rejects.
+    const newCompleted = !item.completed;
+    setPunchList((p) => p.map((x) => (x.id === item.id ? { ...x, completed: newCompleted } : x)));
     const { data, error } = await supabase
       .from("punch_list")
-      .update({ completed: !item.completed })
+      .update({ completed: newCompleted })
       .eq("id", item.id)
       .select()
       .single();
-    if (!error && data) {
+    if (error) {
+      // Rollback on failure
+      setPunchList((p) => p.map((x) => (x.id === item.id ? { ...x, completed: item.completed } : x)));
+      toast.error("Failed to update: " + error.message);
+    } else if (data) {
+      // Reconcile with the canonical row from server
       setPunchList((p) => p.map((x) => (x.id === data.id ? data : x)));
     }
-  }, []);
+  }, [toast]);
 
   const deletePunch = useCallback(async (item) => {
     const ok = await confirm({
@@ -11284,7 +11587,17 @@ function Jobs({ jobs, setJobs, clients, jobPhotos, setJobPhotos, dailyLogs, sett
           <CardContent className="p-12">
             <EmptyState
               icon={<Briefcase className="w-10 h-10 text-slate-700" />}
-              message={jobs.length === 0 ? "No jobs yet" : "No jobs match your filter"}
+              message={
+                jobs.length === 0
+                  ? "No jobs yet — fill the form above to create your first job"
+                  : `No jobs match "${filter}"${search ? ` and "${search}"` : ""}`
+              }
+              action={
+                jobs.length > 0
+                  ? () => { setFilter("All"); setSearch(""); }
+                  : null
+              }
+              actionLabel={jobs.length > 0 ? "Clear filters" : null}
             />
           </CardContent>
         </Card>
@@ -12215,12 +12528,19 @@ function PhotoUploader({ jobId, onUploaded }) {
           <option>Final</option>
           <option>Reference</option>
         </Sel>
-        <Inp
-          placeholder="Caption (optional)"
-          value={caption}
-          onChange={(e) => setCaption(e.target.value)}
-          className="md:col-span-9"
-        />
+        <div className="md:col-span-9 flex items-center gap-2">
+          <Inp
+            placeholder="Caption (optional)"
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+          />
+          <VoiceMicButton
+            currentValue={caption}
+            onChange={setCaption}
+            appendMode
+            title="Dictate caption"
+          />
+        </div>
       </div>
       <div className="flex items-center gap-3">
         <input
@@ -12696,23 +13016,37 @@ function DailyLogs({ jobs, dailyLogs, setDailyLogs }) {
             />
           </div>
           <div className="mb-3">
-            <label className="block text-xs text-slate-400 mb-1">Work Completed *</label>
-            <textarea
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs text-slate-400">Work Completed *</label>
+              <VoiceMicButton
+                currentValue={workCompleted}
+                onChange={setWorkCompleted}
+                appendMode
+                title="Dictate work completed"
+              />
+            </div>
+            <AutoTextarea
               value={workCompleted}
               onChange={(e) => setWorkCompleted(e.target.value)}
-              rows={3}
+              minRows={3}
               placeholder="What was done today..."
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
             />
           </div>
           <div className="mb-3">
-            <label className="block text-xs text-slate-400 mb-1">Issues / Notes</label>
-            <textarea
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs text-slate-400">Issues / Notes</label>
+              <VoiceMicButton
+                currentValue={issues}
+                onChange={setIssues}
+                appendMode
+                title="Dictate issues / notes"
+              />
+            </div>
+            <AutoTextarea
               value={issues}
               onChange={(e) => setIssues(e.target.value)}
-              rows={2}
+              minRows={2}
               placeholder="Anything notable, delays, change requests, etc."
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-400/50"
             />
           </div>
           <Btn
@@ -13227,6 +13561,42 @@ function AppInner() {
     toast.info("Signed out");
   };
 
+  // v1.4 — Global keyboard shortcuts
+  // Esc: close mobile nav (modals + drawers handle their own Esc internally)
+  // /:   focus the nearest search input on the active tab
+  useEffect(() => {
+    const handler = (e) => {
+      // Don't intercept when user is typing in a field
+      const target = e.target;
+      const inField = target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      );
+
+      if (e.key === "Escape") {
+        if (mobileNavOpen) {
+          setMobileNavOpen(false);
+          e.preventDefault();
+        }
+        return;
+      }
+
+      if (e.key === "/" && !inField) {
+        // Find first visible search input on the page and focus it
+        const searchInput = document.querySelector('input[type="search"], input[placeholder*="Search" i], input[placeholder*="search" i]');
+        if (searchInput) {
+          e.preventDefault();
+          searchInput.focus();
+          searchInput.select();
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [mobileNavOpen]);
+
   // Daily-log alert badge for nav
   const today = new Date().toISOString().slice(0, 10);
   const activeJobs = jobs.filter((j) => j.status === "Active");
@@ -13279,10 +13649,41 @@ function AppInner() {
 
   if (!dataLoaded) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-10 h-10 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-slate-500 text-sm">Loading your workspace...</p>
+      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 text-slate-200">
+        {/* Skeleton header */}
+        <header className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-slate-800">
+          <div className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-7 h-7 rounded bg-amber-400/20 animate-pulse" />
+              <div className="h-5 w-40 rounded bg-slate-800 animate-pulse" />
+            </div>
+            <div className="hidden lg:flex items-center gap-1">
+              {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+                <div key={i} className="h-8 w-20 rounded bg-slate-800 animate-pulse" />
+              ))}
+            </div>
+            <div className="w-8 h-8 rounded-full bg-slate-800 animate-pulse lg:hidden" />
+          </div>
+        </header>
+        {/* Skeleton body */}
+        <div className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-6 space-y-6">
+          {/* Big banner skeleton */}
+          <div className="h-24 rounded-2xl bg-slate-900/60 border border-slate-800 animate-pulse" />
+          {/* KPI grid skeleton */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="h-24 rounded-2xl bg-slate-900/60 border border-slate-800 animate-pulse" />
+            ))}
+          </div>
+          {/* Two-column content skeleton */}
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div className="h-64 rounded-2xl bg-slate-900/60 border border-slate-800 animate-pulse" />
+            <div className="h-64 rounded-2xl bg-slate-900/60 border border-slate-800 animate-pulse" />
+          </div>
+          {/* Loading message at bottom — non-spinning, less attention-grabbing */}
+          <div className="text-center text-slate-600 text-xs pt-2">
+            Loading your workspace...
+          </div>
         </div>
       </div>
     );
