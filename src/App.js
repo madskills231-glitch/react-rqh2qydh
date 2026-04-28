@@ -75,6 +75,68 @@ import { supabase } from "./supabase";
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
 // ================================================================
+// NORTHSHORE OS v1.3.3 — Apr 27 2026 — Schema drift fix (code, not SQL)
+//
+// v1.3.2's audit reported 30 missing columns. After Connor ran
+// the verify SQL and shared the actual schema, the picture changed:
+//
+//   - 12 of 30 were FALSE POSITIVES from the audit script. Its
+//     regex captured column names from CHANGELOG comment text
+//     (where I described "what the column SHOULD be") as if they
+//     were real payload writes. Audit script fixed in v1.3.3
+//     artifact: now strips comments before parsing.
+//
+//   - 5 of 30 were REAL DRIFT — code was writing the wrong
+//     column name. Renamed to match the (better) DB schema:
+//
+//       daily_logs.hours          → hours_connor
+//       daily_logs.work_completed → work_performed
+//       material_deliveries.item  → description
+//       material_deliveries.received_date → delivered_date
+//       punch_list.priority       → category (with optional render)
+//
+//   - 13 of 30 were already-correct code that the audit ALSO
+//     ghost-flagged. Verified zero matches in real source.
+//
+// THE DB SCHEMA IS RICHER THAN THE CODE. Worth reading the
+// schema dump to see what features are LATENT (data fields exist,
+// no UI yet):
+//   - daily_logs has hours_connor / hours_dad / hours_other +
+//     other_worker_name. Per-person hours tracked separately —
+//     critical for payroll once dad becomes paid worker.
+//     Today: code lumps everything into hours_connor.
+//     v1.4: expose dad/other fields when payroll structure is set.
+//   - daily_logs has materials_used, temperature, visitors —
+//     none surfaced in current Daily Log UI.
+//   - tools has assigned_to, current_location, warranty_expires_at,
+//     hours_since_service, disposed_at — the schema anticipates
+//     a fleet-management UI that hasn't been built.
+//   - lien_waivers has condition_payment_amount/method/reference,
+//     effective_at, voided_at, voided_reason — designed for the
+//     full conditional-vs-unconditional waiver workflow.
+//   - sworn_statements has parties (jsonb), delivered_at,
+//     delivered_to — same story.
+//
+// READS UPDATED:
+//   - log.work_completed → log.work_performed (Daily Log detail view)
+//   - log.hours read replaced with sum of hours_connor+dad+other,
+//     with backwards compat for legacy `hours` field on existing rows.
+//   - d.item → d.description (delivery list)
+//   - d.received_date → d.delivered_date (delivery list display)
+//   - m.received_date → m.delivered_date (lien calc + last activity)
+//   - punch item.priority → item.category (badge now optional)
+//
+// NO SQL MIGRATION. Pure code rename to match existing DB.
+// Existing rows in DB use the canonical column names already, so
+// historical data renders correctly post-deploy.
+//
+// Backward compat: daily-log hours read sums all four possible
+// fields (hours_connor + hours_dad + hours_other + legacy `hours`)
+// so any logs saved against the old `hours` field — IF they exist —
+// still render their values. Likely zero such rows since the old
+// payload would have been rejected by Postgres for unknown column.
+//
+// ================================================================
 // NORTHSHORE OS v1.3.2 — Apr 27 2026 — Flagged-items sweep
 //
 // Connor cleared the "FLAGGED, NOT PATCHED" list in one ship.
@@ -7881,7 +7943,7 @@ function emailWarning(input) {
 }
 
 // ================================================================
-// LIEN DEADLINE CALCULATOR (v1.2)
+// LIEN DEADLINE CALCULATOR (v1.2, schema-corrected v1.3.3)
 // Michigan Construction Lien Act (Act 497 of 1980): a contractor
 // has 90 days from the date of last labor or material furnished
 // to record a Construction Lien. Miss this window, lose lien rights.
@@ -7889,7 +7951,7 @@ function emailWarning(input) {
 // "Last labor/material" = MAX of:
 //   - latest daily_log.log_date for this job
 //   - latest time_entries.clock_out (or clock_in if no clock_out yet)
-//   - latest material_deliveries.received_date
+//   - latest material_deliveries.delivered_date
 // Returns null if the job has no labor/material activity yet.
 // ================================================================
 function lienDeadlineFor(job, dailyLogs, timeEntries, materialDeliveries) {
@@ -7913,8 +7975,8 @@ function lienDeadlineFor(job, dailyLogs, timeEntries, materialDeliveries) {
     }
   });
   (materialDeliveries || []).forEach((m) => {
-    if (m.job_id === job.id && m.received_date) {
-      dates.push(new Date(m.received_date + "T12:00:00").getTime());
+    if (m.job_id === job.id && m.delivered_date) {
+      dates.push(new Date(m.delivered_date + "T12:00:00").getTime());
     }
   });
 
@@ -7980,7 +8042,7 @@ function lastActivityForJob(job, dailyLogs, timeEntries, jobPhotos, materialDeli
     if (p.job_id === job.id && p.created_at) dates.push(new Date(p.created_at).getTime());
   });
   (materialDeliveries || []).forEach((m) => {
-    if (m.job_id === job.id && m.received_date) dates.push(new Date(m.received_date + "T12:00:00").getTime());
+    if (m.job_id === job.id && m.delivered_date) dates.push(new Date(m.delivered_date + "T12:00:00").getTime());
   });
   if (dates.length === 0) return null;
   return new Date(Math.max(...dates));
@@ -10353,7 +10415,7 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
       .insert({
         job_id: job.id,
         item: pItem,
-        priority: pPriority,
+        category: pPriority || null,
         completed: false,
       })
       .select()
@@ -10401,7 +10463,7 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
       .insert({
         job_id: job.id,
         supplier: dSupplier,
-        item: dItem,
+        description: dItem,
         quantity: dQty || null,
         expected_date: dExpectedDate,
         cost: parseFloat(dCost) || null,
@@ -10423,8 +10485,8 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
 
   const updateDeliveryStatus = useCallback(async (del, newStatus) => {
     const updates = { status: newStatus };
-    if (newStatus === "Delivered" && !del.received_date) {
-      updates.received_date = new Date().toISOString().slice(0, 10);
+    if (newStatus === "Delivered" && !del.delivered_date) {
+      updates.delivered_date = new Date().toISOString().slice(0, 10);
     }
     const { data, error } = await supabase
       .from("material_deliveries")
@@ -10443,7 +10505,7 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
   const deleteDelivery = useCallback(async (del) => {
     const ok = await confirm({
       title: "Delete delivery record?",
-      message: `${del.supplier} — ${del.item} will be removed.`,
+      message: `${del.supplier} — ${del.description} will be removed.`,
       confirmText: "Delete",
       danger: true,
     });
@@ -10599,13 +10661,15 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
                               title="Mark complete"
                             />
                             <span className="text-slate-200 text-sm flex-1">{item.item}</span>
-                            <Badge
-                              label={item.priority}
-                              color={
-                                item.priority === "High"   ? "red" :
-                                item.priority === "Medium" ? "yellow" : "gray"
-                              }
-                            />
+                            {item.category && (
+                              <Badge
+                                label={item.category}
+                                color={
+                                  item.category === "High"   ? "red" :
+                                  item.category === "Medium" ? "yellow" : "gray"
+                                }
+                              />
+                            )}
                             <button
                               onClick={() => deletePunch(item)}
                               className="text-slate-600 hover:text-rose-400 transition-colors"
@@ -10728,7 +10792,7 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
                             <div className="flex-1 min-w-0">
                               <div className="flex flex-wrap items-baseline gap-2">
                                 <span className="text-slate-200 text-sm font-medium">{d.supplier}</span>
-                                <span className="text-slate-400 text-sm">— {d.item}</span>
+                                <span className="text-slate-400 text-sm">— {d.description}</span>
                                 {d.quantity && <span className="text-slate-500 text-xs">×{d.quantity}</span>}
                                 {d.cost && (
                                   <span className="text-amber-400/70 text-xs">{currency(d.cost)}</span>
@@ -10739,9 +10803,9 @@ function JobOperations({ job, jobPhotos, dailyLogs, setJobPhotos, settings, allJ
                                   {overdue && "OVERDUE — "}
                                   Expected {formatDate(d.expected_date)}
                                 </span>
-                                {d.received_date && (
+                                {d.delivered_date && (
                                   <span className="text-emerald-400">
-                                    Delivered {formatDate(d.received_date)}
+                                    Delivered {formatDate(d.delivered_date)}
                                   </span>
                                 )}
                               </div>
@@ -12526,13 +12590,16 @@ function DailyLogs({ jobs, dailyLogs, setDailyLogs }) {
       toast.error("Describe work completed");
       return;
     }
+    // v1.3.3 — Schema names: DB has hours_connor / hours_dad / hours_other.
+    // For now we map flat-form `hours` → hours_connor (single-user app today).
+    // v1.4 will expose dad/other-worker fields when payroll structure is set.
     const payload = {
       job_id: jobId,
       log_date: date,
       crew,
-      hours: parseFloat(hours) || null,
+      hours_connor: parseFloat(hours) || null,
       weather,
-      work_completed: workCompleted,
+      work_performed: workCompleted,
       issues,
     };
     const { data, error } = await supabase
@@ -12699,11 +12766,19 @@ function DailyLogs({ jobs, dailyLogs, setDailyLogs }) {
                     </p>
                   </div>
                   <div className="flex items-center gap-3 text-xs text-slate-500 shrink-0">
-                    {log.hours && (
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" /> {log.hours}h
-                      </span>
-                    )}
+                    {(() => {
+                      // v1.3.3 — Sum hours_connor + hours_dad + hours_other.
+                      // Backward-compat: legacy rows may still have a flat `hours` field.
+                      const total = (Number(log.hours_connor) || 0) +
+                                    (Number(log.hours_dad)    || 0) +
+                                    (Number(log.hours_other)  || 0) +
+                                    (Number(log.hours)        || 0);
+                      return total > 0 ? (
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3" /> {total}h
+                        </span>
+                      ) : null;
+                    })()}
                     {log.weather && (
                       <span className="flex items-center gap-1">
                         <CloudSun className="w-3 h-3" /> {log.weather}
@@ -12725,7 +12800,7 @@ function DailyLogs({ jobs, dailyLogs, setDailyLogs }) {
                 <div className="space-y-2">
                   <div>
                     <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Work Completed</p>
-                    <p className="text-slate-300 text-sm whitespace-pre-line">{log.work_completed}</p>
+                    <p className="text-slate-300 text-sm whitespace-pre-line">{log.work_performed}</p>
                   </div>
                   {log.issues && (
                     <div>
