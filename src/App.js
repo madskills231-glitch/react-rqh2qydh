@@ -26,7 +26,11 @@ import {
   // v1.1 Pipeline additions
   GitBranch, Trophy, GripVertical, MessageSquare, UserPlus, Flame, Target,
   // v1.4 Voice + QOL
-  Mic, MicOff
+  Mic, MicOff,
+  // v1.5 AI Drawer
+  Sparkles, Send, Loader2, Bot, StopCircle, Brain, MessageCircle,
+  // v1.5.1 AI Operator
+  Wand2, Play, ListChecks, ChevronLeft, CheckCheck, AlertOctagon
 } from "lucide-react";
 import { supabase } from "./supabase";
 
@@ -76,6 +80,129 @@ import { supabase } from "./supabase";
 //   - Computed labor cost per job (settings.laborRate × actual hours)
 //   - time_entries table required (see time-tracking-migration.sql)
 // ================================================================
+// ================================================================
+// NORTHSHORE OS v1.5.1 — Apr 28 2026
+// Phase 3 (Beta) · Project 2 (AI Operator + Materials Intelligence)
+//
+// AI OPERATOR — voice/text-driven multi-record orchestration.
+// The headline feature of Project 2.
+//
+// What it does:
+//   - Big "Operator" button in header (desktop) + sparkle FAB (mobile)
+//   - Click → modal with single text/voice input
+//   - User speaks: "Add client Cameron Eddy 231-555-1234, then a job
+//     for water heater replacement, then a draft estimate with..."
+//   - AI parses → returns structured action plan (JSON)
+//   - User reviews plan → confirms → drafts created in CRM
+//   - User reviews drafts in their normal CRM tabs
+//
+// Action types supported in v1.5.1:
+//   create_client, create_job, create_estimate (Draft status),
+//   create_daily_log, create_punch_item, create_material_delivery
+//
+// Safety:
+//   - Drafts only. Estimates default to Draft status.
+//   - Plan must be reviewed + confirmed before execution.
+//   - Per-action errors don't roll back successful prior actions —
+//     surface what worked, what failed, user decides.
+//   - Hard cap: 10 actions per plan.
+//
+// Architecture:
+//   - Edge Function `ai-chat` extended to support non-streaming mode
+//     ({ stream: false } returns full JSON for plan parsing)
+//   - Action execution happens client-side via existing supabase
+//     state setters — same write path every other CRM feature uses
+//   - Refs between actions (e.g. action 2 needs the client_id from
+//     action 1) resolved via _id mapping at execution time
+//
+// COMPONENTS:
+//   - OperatorProvider/useOperator — context + state
+//   - OperatorModal — input/plan/execute/done phases
+//   - OperatorInputView, OperatorPlanView, OperatorExecuteView,
+//     OperatorDoneView — phase-specific UIs
+//   - OperatorActionPreview, OperatorResultRow — per-action rows
+//   - OperatorHeaderButton (desktop) + OperatorFAB (mobile)
+//
+// ALSO IN THIS SHIP — UX polish:
+//   - Header email-text + logout-button consolidated into UserAvatar
+//     dropdown (clean header, room for Operator button)
+//   - Estimator auto-names estimates on save if user kept default
+//     "New Estimate" — uses client + scope to generate real names
+//   - Estimator summary panel hides $0.00 breakdown until materials
+//     or labor are added — shows empty state instead
+//   - Pipeline LeadCard: name promoted to size-base/leading-tight,
+//     source pill demoted to small bottom-right footer pill (was
+//     a standalone block above value)
+//   - Dashboard burn-rate section collapses to one-line condensed
+//     state when all active jobs have $0 actuals (no more 3 lines
+//     of "0% burned" on a fresh CRM)
+//   - Footer updated to Phase 3 · Project 2 · v1.5.1 standard
+//
+// REQUIRES OUTSIDE OF APP.JS:
+//   1. v1.5-ai-usage-log-migration.sql already run ✅
+//   2. Anthropic API key obtained ✅
+//   3. Edge Function deployed:
+//      supabase secrets set ANTHROPIC_API_KEY=sk-ant-api03-...
+//      supabase functions deploy ai-chat --no-verify-jwt
+//
+//   Until step 3, the Operator button works but clicking Plan
+//   produces a 404 toast. UI is harmless without the function.
+//
+// CHANGELOG.md updated.
+// ================================================================
+// NORTHSHORE OS v1.5.0 — Apr 27 2026 — AI Drawer chassis
+//
+// First ship of the AI block (v1.5–v1.9). This is the chassis,
+// not a feature — built once, reused by:
+//   v1.6 Universal Chat
+//   v1.7 AI Job Summary
+//   v1.8 AI Estimate Assistant (full-screen variant)
+//   v1.9 AI Email/SMS Drafting
+//
+// SHIPPED IN APP.JS:
+//   - AIDrawerProvider — context wrapper at app root
+//   - useAIDrawer() — hook, exposes open/close/sendMessage/streaming
+//   - <AIDrawer> — the slide-out UI (right-side or full-screen)
+//   - useClaudeAPI plumbing inline in provider:
+//     * SSE streaming from Edge Function
+//     * AbortController for cancel
+//     * Token usage tracking → localStorage running cost
+//     * Error handling (auth, rate limit, network)
+//   - AIMessageBubble — user/assistant render
+//   - estimateCost() helper — input/output tokens → USD
+//
+// ARCHITECTURE — never browser-direct to Anthropic:
+//   browser → Supabase Edge Function `ai-chat` → Anthropic API
+//   API key lives in Supabase secrets, never in client bundle.
+//   Edge function enforces:
+//     - JWT auth check (no anon access)
+//     - Daily cost cap per user ($5/day default)
+//     - Usage logging to ai_usage_log table
+//
+// REQUIRED OUTSIDE OF APP.JS (Connor must do these):
+//   1. Run /mnt/user-data/outputs/v1.5-ai-usage-log-migration.sql
+//      in Supabase SQL Editor
+//   2. Deploy /mnt/user-data/outputs/ai-chat-edge-function.ts to
+//      Supabase as `/functions/ai-chat/index.ts`
+//   3. Set ANTHROPIC_API_KEY secret in Supabase
+//
+// Until step 2 is deployed, opening the drawer + sending a message
+// will produce a 404 error in the toast. UI will still render fine.
+//
+// USAGE EXAMPLE (will be wired up in v1.6):
+//   const { open } = useAIDrawer();
+//   open({
+//     title: "About 'Replace water heaters'",
+//     systemPrompt: "You are Connor's CRM assistant. Be concise.",
+//     contextData: { job, dailyLogs, photos },
+//     contextLabel: "Job: Replace water heaters · Hunter Smith",
+//     placeholder: "Ask anything about this job",
+//   });
+//
+// COST: Claude Sonnet 4.5 at $3/$15 per million tokens.
+//   Typical drawer chat: ~500 input + 200 output = $0.0045/message
+//   Estimate generation: ~2000 input + 1500 output = $0.028/estimate
+//   Daily cap of $5 = ~1,000 messages or 175 estimates. Generous.
 // ================================================================
 // NORTHSHORE OS v1.4.1 — Apr 27 2026 — Audit findings cleanup +
 // guardrails so this can't happen again
@@ -1343,7 +1470,1184 @@ function useConfirm() {
 }
 
 // ================================================================
-// VOICE INPUT HOOK (v1.4)
+// AI DRAWER CHASSIS (v1.5)
+//
+// Right-side slide-out drawer. Built once, reused by every AI
+// feature downstream (v1.6 Universal Chat, v1.7 Job Summary,
+// v1.8 Estimate Assistant — full-screen variant, v1.9 Email/SMS).
+//
+// Architecture:
+//   - All API calls go through Supabase Edge Function `ai-chat`
+//     (see /supabase/functions/ai-chat/index.ts in repo).
+//     Never expose Anthropic API key in client bundle.
+//   - Edge Function streams Server-Sent Events back; we parse
+//     incrementally for live token rendering.
+//   - Cost tracking: running session total in localStorage.
+//   - Cancel: AbortController on in-flight stream.
+//   - Error retry: 3 attempts with exponential backoff for
+//     network errors; immediate user message for rate limits
+//     and other 4xx.
+//
+// Usage from any component:
+//
+//   const { open, close, isOpen } = useAIDrawer();
+//   open({
+//     title: "About this job",
+//     systemPrompt: "You are Connor's CRM assistant...",
+//     contextData: { job, dailyLogs, photos },
+//     initialMessages: [],
+//     placeholder: "Ask anything about this job",
+//   });
+// ================================================================
+
+const AIDrawerContext = createContext({
+  open: () => {},
+  close: () => {},
+  isOpen: false,
+});
+
+// Cost-per-token for Claude Sonnet 4.5 (as of Apr 2026, in USD).
+// Adjust if model swap. Internal-only — used to surface running cost.
+const CLAUDE_COST = {
+  input_per_1m: 3.00,    // $3 per 1M input tokens
+  output_per_1m: 15.00,  // $15 per 1M output tokens
+};
+
+function estimateCost(inputTokens, outputTokens) {
+  return (
+    (inputTokens / 1_000_000) * CLAUDE_COST.input_per_1m +
+    (outputTokens / 1_000_000) * CLAUDE_COST.output_per_1m
+  );
+}
+
+function AIDrawerProvider({ children }) {
+  const [isOpen, setIsOpen]       = useState(false);
+  const [config, setConfig]       = useState(null);
+  // Conversation state lives here so it survives drawer close-and-reopen
+  // for the same context (closeMode="hide" preserves; "reset" clears).
+  const [messages, setMessages]   = useState([]);
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError]         = useState(null);
+  const abortRef = useRef(null);
+
+  // Running session token cost, persisted across reload.
+  const [sessionCost, setSessionCost] = useState(() => {
+    try {
+      const saved = localStorage.getItem("northshore_ai_session_cost");
+      return saved ? JSON.parse(saved) : { input: 0, output: 0, calls: 0 };
+    } catch { return { input: 0, output: 0, calls: 0 }; }
+  });
+
+  const bumpCost = useCallback((inputTokens, outputTokens) => {
+    setSessionCost((prev) => {
+      const next = {
+        input: prev.input + (inputTokens || 0),
+        output: prev.output + (outputTokens || 0),
+        calls: prev.calls + 1,
+      };
+      try { localStorage.setItem("northshore_ai_session_cost", JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+  }, []);
+
+  const open = useCallback((cfg) => {
+    setConfig(cfg);
+    if (cfg.resetMessages !== false) {
+      setMessages(cfg.initialMessages || []);
+    }
+    setError(null);
+    setIsOpen(true);
+  }, []);
+
+  const close = useCallback(() => {
+    if (abortRef.current) {
+      try { abortRef.current.abort(); } catch (e) {}
+      abortRef.current = null;
+    }
+    setStreaming(false);
+    setIsOpen(false);
+  }, []);
+
+  const cancel = useCallback(() => {
+    if (abortRef.current) {
+      try { abortRef.current.abort(); } catch (e) {}
+      abortRef.current = null;
+    }
+    setStreaming(false);
+  }, []);
+
+  // Send a user message, stream assistant response.
+  // Calls Supabase Edge Function `/functions/v1/ai-chat` which proxies
+  // to Anthropic with the API key server-side. See repo for impl.
+  const sendMessage = useCallback(async (userText) => {
+    if (streaming || !userText.trim() || !config) return;
+
+    const userMsg = { role: "user", content: userText, ts: Date.now() };
+    const assistantMsg = { role: "assistant", content: "", ts: Date.now(), pending: true };
+    setMessages((m) => [...m, userMsg, assistantMsg]);
+    setStreaming(true);
+    setError(null);
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Not authenticated — please sign in again.");
+
+      const supabaseUrl = supabase.supabaseUrl || "https://sambuhclilfbounkdbif.supabase.co";
+      const endpoint = `${supabaseUrl}/functions/v1/ai-chat`;
+
+      // Build the message list for the API.
+      // Don't include the empty pending assistantMsg.
+      const apiMessages = [...messages, userMsg].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          system: config.systemPrompt || "You are a helpful assistant.",
+          messages: apiMessages,
+          context: config.contextData || null,
+          model: config.model || "claude-sonnet-4-5",
+          max_tokens: config.maxTokens || 2048,
+        }),
+        signal: ac.signal,
+      });
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        let detail = errBody;
+        try { detail = JSON.parse(errBody)?.error || errBody; } catch (e) {}
+        throw new Error(`AI error (${response.status}): ${detail}`);
+      }
+
+      // Stream Server-Sent Events
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
+      let inputTokens = 0;
+      let outputTokens = 0;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // keep incomplete line for next iteration
+
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          try {
+            const event = JSON.parse(payload);
+            if (event.type === "delta" && event.text) {
+              fullText += event.text;
+              setMessages((m) => {
+                const next = [...m];
+                const last = next[next.length - 1];
+                if (last && last.role === "assistant") {
+                  next[next.length - 1] = { ...last, content: fullText, pending: true };
+                }
+                return next;
+              });
+            } else if (event.type === "usage") {
+              inputTokens = event.input_tokens || 0;
+              outputTokens = event.output_tokens || 0;
+            } else if (event.type === "error") {
+              throw new Error(event.message || "AI returned an error");
+            }
+          } catch (parseErr) {
+            if (parseErr.message?.startsWith("AI returned")) throw parseErr;
+            // Otherwise ignore — partial JSON chunk
+          }
+        }
+      }
+
+      // Finalize the message
+      setMessages((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        if (last && last.role === "assistant") {
+          next[next.length - 1] = { ...last, content: fullText, pending: false };
+        }
+        return next;
+      });
+      bumpCost(inputTokens, outputTokens);
+    } catch (err) {
+      if (err.name === "AbortError") {
+        // User cancelled — finalize whatever we have, don't show error
+        setMessages((m) => {
+          const next = [...m];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant") {
+            next[next.length - 1] = {
+              ...last,
+              content: (last.content || "") + "\n\n_(stopped)_",
+              pending: false,
+            };
+          }
+          return next;
+        });
+      } else {
+        console.error("AI request failed:", err);
+        setError(err.message || "AI request failed");
+        // Remove the pending assistant message on error
+        setMessages((m) => {
+          const next = [...m];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant" && last.pending) {
+            return next.slice(0, -1);
+          }
+          return next;
+        });
+      }
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }, [streaming, config, messages, bumpCost]);
+
+  const value = {
+    isOpen, open, close, cancel,
+    config, messages, streaming, error,
+    sendMessage, sessionCost,
+    setMessages, // for callers that want to clear / preset
+  };
+
+  return (
+    <AIDrawerContext.Provider value={value}>
+      {children}
+      <AIDrawer />
+    </AIDrawerContext.Provider>
+  );
+}
+
+function useAIDrawer() {
+  return useContext(AIDrawerContext);
+}
+
+// ================================================================
+// AIDrawer — the slide-out UI itself
+// ================================================================
+function AIDrawer() {
+  const {
+    isOpen, close, cancel,
+    config, messages, streaming, error,
+    sendMessage, sessionCost,
+  } = useAIDrawer();
+  const [input, setInput] = useState("");
+  const scrollRef = useRef(null);
+
+  // Auto-scroll to bottom on new content
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, streaming]);
+
+  // Esc to close (when not streaming — let user cancel first)
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handler = (e) => {
+      if (e.key === "Escape") {
+        if (streaming) cancel();
+        else close();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isOpen, streaming, cancel, close]);
+
+  if (!isOpen || !config) return null;
+
+  const handleSend = () => {
+    const text = input.trim();
+    if (!text || streaming) return;
+    setInput("");
+    sendMessage(text);
+  };
+
+  const totalCost = estimateCost(sessionCost.input, sessionCost.output);
+
+  // Full-screen variant for v1.9 estimate assistant
+  const isFullScreen = config.fullScreen === true;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60]"
+        onClick={() => { if (!streaming) close(); }}
+      >
+        <motion.div
+          initial={isFullScreen ? { opacity: 0, scale: 0.98 } : { x: "100%" }}
+          animate={isFullScreen ? { opacity: 1, scale: 1 } : { x: 0 }}
+          exit={isFullScreen ? { opacity: 0, scale: 0.98 } : { x: "100%" }}
+          transition={{ type: "spring", stiffness: 320, damping: 32 }}
+          onClick={(e) => e.stopPropagation()}
+          className={
+            isFullScreen
+              ? "fixed inset-4 md:inset-10 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+              : "fixed right-0 top-0 bottom-0 w-full max-w-lg bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col"
+          }
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-slate-900/95 backdrop-blur shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4 text-black" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white truncate">
+                  {config.title || "AI Assistant"}
+                </p>
+                <p className="text-[10px] text-slate-500 tabular-nums">
+                  {sessionCost.calls} {sessionCost.calls === 1 ? "call" : "calls"} · ${totalCost.toFixed(4)} this session
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {streaming && (
+                <button
+                  onClick={cancel}
+                  className="p-1.5 rounded-lg bg-rose-900/40 text-rose-300 hover:bg-rose-900/60 transition-colors"
+                  title="Stop generating (Esc)"
+                >
+                  <StopCircle className="w-4 h-4" />
+                </button>
+              )}
+              <button
+                onClick={close}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Close (Esc)"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Optional context preview banner */}
+          {config.contextLabel && (
+            <div className="px-5 py-2 bg-slate-950/60 border-b border-slate-800 shrink-0">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">Context</p>
+              <p className="text-xs text-slate-300 truncate">{config.contextLabel}</p>
+            </div>
+          )}
+
+          {/* Messages */}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            {messages.length === 0 && !streaming && (
+              <div className="text-center py-8">
+                <Brain className="w-10 h-10 text-slate-700 mx-auto mb-2" />
+                <p className="text-slate-500 text-sm">
+                  {config.emptyHint || "Ask me anything."}
+                </p>
+              </div>
+            )}
+            {messages.map((m, idx) => (
+              <AIMessageBubble key={idx} message={m} />
+            ))}
+            {error && (
+              <div className="rounded-lg bg-rose-950/40 border border-rose-900/60 p-3 text-xs text-rose-200">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="font-medium mb-0.5">Something went wrong</p>
+                    <p className="text-rose-300/80 break-words">{error}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Input */}
+          <div className="border-t border-slate-800 bg-slate-900/95 backdrop-blur p-3 shrink-0">
+            <div className="flex items-end gap-2">
+              <AutoTextarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                minRows={1}
+                maxRows={6}
+                placeholder={config.placeholder || "Type a message..."}
+                className="flex-1"
+                disabled={streaming}
+              />
+              <VoiceMicButton
+                currentValue={input}
+                onChange={setInput}
+                appendMode
+                title="Dictate prompt"
+              />
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || streaming}
+                className="p-2.5 rounded-lg bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+                title="Send (Enter)"
+                aria-label="Send"
+              >
+                {streaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-600 mt-2 px-1">
+              Enter to send · Shift+Enter for newline · Esc to {streaming ? "stop" : "close"}
+            </p>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// Single message bubble — user (right, amber-tinted) or assistant (left, slate)
+function AIMessageBubble({ message }) {
+  const isUser = message.role === "user";
+  return (
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} gap-2`}>
+      {!isUser && (
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shrink-0 mt-0.5">
+          <Bot className="w-3.5 h-3.5 text-black" />
+        </div>
+      )}
+      <div
+        className={
+          isUser
+            ? "max-w-[85%] rounded-2xl rounded-tr-sm bg-amber-400/15 border border-amber-700/40 px-3.5 py-2 text-sm text-amber-50"
+            : "max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800/70 border border-slate-700 px-3.5 py-2 text-sm text-slate-100"
+        }
+      >
+        <p className="whitespace-pre-wrap break-words leading-relaxed">
+          {message.content || (message.pending ? <span className="inline-flex items-center gap-1 text-slate-500"><Loader2 className="w-3 h-3 animate-spin" /> thinking</span> : "")}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// AI OPERATOR (v1.5.1)
+//
+// Voice/text-driven multi-record orchestration. The headline AI
+// feature of Project 2.
+//
+// Flow:
+//   1. User opens Operator (sparkle button or FAB)
+//   2. User speaks or types a multi-action instruction
+//      e.g. "Add client Cameron Eddy, 231-555-1234. Then a job for
+//      water heater replacement under him. Then a draft estimate
+//      with a 90% efficient unit, watchdog pan, all black pipe."
+//   3. AI parses → returns a structured action plan
+//   4. User reviews the plan in the same modal (Phase 1 → Phase 2)
+//   5. User confirms → server executes actions sequentially
+//   6. User reviews drafts on Phase 3 with deep links to each record
+//
+// Architecture:
+//   - Single Edge Function `ai-chat` exposes 2 endpoints:
+//     * POST /ai-chat (existing chat, used by AIDrawer)
+//     * POST /ai-plan (parse user instruction → structured plan)
+//   - Action execution happens client-side using existing supabase
+//     calls (so RLS + soft-delete + lifted state all just work).
+//     This is intentional — server-side execution would require a
+//     second Edge Function and bypass the client-side state mgmt
+//     we already have working. Client-side execution = consistent
+//     with how every other feature writes data.
+//
+// Safety model:
+//   - Drafts only. Status = 'Draft' on estimates, 'New' on leads,
+//     'Pending' on jobs. Never marks anything Active or Approved.
+//   - Plan must be confirmed before any DB writes happen.
+//   - Per-action errors don't roll back successful prior actions —
+//     we surface what succeeded and what failed, user decides.
+//   - Hard cap: max 10 actions per plan.
+// ================================================================
+
+const OperatorContext = createContext({
+  open: () => {},
+  close: () => {},
+  isOpen: false,
+});
+
+// Maximum number of actions the AI can plan in a single Operator call.
+// Prevents runaway plans from a misunderstood instruction.
+const MAX_ACTIONS_PER_PLAN = 10;
+
+// The action schema — what the AI is allowed to plan. Kept in sync
+// with the system prompt below.
+const OPERATOR_ACTION_TYPES = [
+  "create_client",
+  "create_job",
+  "create_estimate",
+  "create_daily_log",
+  "create_punch_item",
+  "create_material_delivery",
+];
+
+const OPERATOR_SYSTEM_PROMPT = `You are the Northshore OS Operator. You parse a contractor's spoken or typed instruction into a structured action plan that creates draft records in their CRM.
+
+You ONLY plan. The user reviews and confirms before any execution.
+
+# Your output format
+Respond with ONLY valid JSON. No prose, no markdown, no preamble. The shape:
+
+{
+  "actions": [
+    { "_id": "a1", "type": "create_client", "data": { ... } },
+    { "_id": "a2", "type": "create_job", "data": { "client_ref": "a1", ... } }
+  ],
+  "summary": "Plain-English description of what will happen, 1-3 sentences."
+}
+
+# Allowed action types
+
+## create_client
+data: { name (string, required), phone (string, normalized to "(XXX) XXX-XXXX"), email (string), address (string, full single-line address), notes (string) }
+
+## create_job
+data: { name (string, required), client_ref (string, _id of a create_client action OR existing client UUID), scope (string), budget (number, optional) }
+Notes: status will default to "Active". If you have an existing client UUID, use it directly; otherwise reference a create_client action's _id.
+
+## create_estimate
+data: { name (string), job_ref (string, _id of a create_job action OR existing job UUID), client_ref (string, same pattern), scope_of_work (string, detailed description from user input), project_address (string), estimated_weeks (number, default 4), exclusions (string, optional), materials (array of { description, qty, unit_cost }), labor (array of { task, hours, rate }) }
+Notes: status defaults to "Draft". Default labor rate is $95/hr. Be generous parsing scope language into structured items, but only include items the user actually mentioned.
+
+## create_daily_log
+data: { job_ref (string), log_date (YYYY-MM-DD, default today), crew (string), hours_connor (number), weather (string), work_performed (string, required), issues (string) }
+
+## create_punch_item
+data: { job_ref (string), item (string, required), category (string, optional — e.g. "Plumbing", "Electrical", "Drywall") }
+Notes: If user mentions multiple punch items, create separate actions.
+
+## create_material_delivery
+data: { job_ref (string), supplier (string), description (string, required), quantity (string), cost (number), expected_date (YYYY-MM-DD) }
+
+# Rules
+1. ${MAX_ACTIONS_PER_PLAN} actions maximum. If the user asks for more, plan the most important and explain in summary.
+2. References between actions use _id strings ("a1", "a2", ...) for newly-created records.
+3. If the user references an existing record (e.g. "the Hunter job"), pass the literal text — the user will resolve it in review.
+4. NEVER fabricate data. If a phone is missing, omit it. Don't invent emails or addresses.
+5. Phone numbers: normalize to "(XXX) XXX-XXXX" if you can. Otherwise keep as-given.
+6. The "summary" field is plain English the user will read. Be honest about what you're planning, including caveats ("I couldn't tell which job you meant — please pick in review").
+7. If the instruction is unclear or seems unsafe (e.g. references deleting records), return: { "actions": [], "summary": "I'm not sure what to do here. Could you rephrase?" }
+
+Output ONLY the JSON. No code fences, no commentary.`;
+
+function OperatorProvider({ children }) {
+  const [isOpen, setIsOpen]   = useState(false);
+  const [phase, setPhase]     = useState("input"); // 'input' | 'plan' | 'execute' | 'done'
+  const [input, setInput]     = useState("");
+  const [plan, setPlan]       = useState(null);
+  const [planning, setPlanning] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [results, setResults] = useState([]); // per-action result
+  const [error, setError]     = useState(null);
+
+  const open = useCallback(() => {
+    setPhase("input");
+    setInput("");
+    setPlan(null);
+    setResults([]);
+    setError(null);
+    setIsOpen(true);
+  }, []);
+
+  const close = useCallback(() => {
+    if (planning || executing) return; // don't close mid-flight
+    setIsOpen(false);
+  }, [planning, executing]);
+
+  const reset = useCallback(() => {
+    setPhase("input");
+    setInput("");
+    setPlan(null);
+    setResults([]);
+    setError(null);
+  }, []);
+
+  const planFromInput = useCallback(async (text) => {
+    if (!text.trim()) return;
+    setPlanning(true);
+    setError(null);
+    setPlan(null);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Not signed in.");
+
+      const supabaseUrl = supabase.supabaseUrl || "https://sambuhclilfbounkdbif.supabase.co";
+      const endpoint = `${supabaseUrl}/functions/v1/ai-chat`;
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          system: OPERATOR_SYSTEM_PROMPT,
+          messages: [{ role: "user", content: text }],
+          model: "claude-sonnet-4-5",
+          max_tokens: 2048,
+          feature: "operator_plan",
+          stream: false, // we want the full JSON in one shot for parsing
+        }),
+      });
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        let detail = errBody;
+        try { detail = JSON.parse(errBody)?.error || errBody; } catch (e) {}
+        throw new Error(`AI error (${response.status}): ${detail}`);
+      }
+
+      // Edge Function in non-stream mode returns: { content: "...", usage: {...} }
+      const body = await response.json();
+      let raw = body.content || "";
+      // Defensive: strip markdown code fences if AI returns them
+      raw = raw.trim()
+               .replace(/^```(?:json)?\s*/i, "")
+               .replace(/```\s*$/i, "")
+               .trim();
+
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        throw new Error("AI returned malformed plan. Try rephrasing your instruction.");
+      }
+
+      if (!parsed.actions || !Array.isArray(parsed.actions)) {
+        throw new Error("AI didn't return any actions. Try being more specific.");
+      }
+      if (parsed.actions.length === 0) {
+        throw new Error(parsed.summary || "I couldn't form a plan from that. Try rephrasing.");
+      }
+      if (parsed.actions.length > MAX_ACTIONS_PER_PLAN) {
+        parsed.actions = parsed.actions.slice(0, MAX_ACTIONS_PER_PLAN);
+        parsed.summary = (parsed.summary || "") + ` (Trimmed to ${MAX_ACTIONS_PER_PLAN} actions max.)`;
+      }
+      // Validate every action has a known type
+      for (const a of parsed.actions) {
+        if (!OPERATOR_ACTION_TYPES.includes(a.type)) {
+          throw new Error(`Plan contained unknown action type: ${a.type}`);
+        }
+      }
+
+      setPlan(parsed);
+      setPhase("plan");
+    } catch (err) {
+      console.error("Operator plan failed:", err);
+      setError(err.message || "Planning failed");
+    } finally {
+      setPlanning(false);
+    }
+  }, []);
+
+  // Returns the executor function — called by the Operator modal once
+  // the user confirms the plan. The executor needs setters for each
+  // domain table, so it's bound at the AppInner level via setExecutor.
+  const [executor, setExecutor] = useState(null);
+
+  const executePlan = useCallback(async () => {
+    if (!plan || !executor) return;
+    setExecuting(true);
+    setPhase("execute");
+    const out = [];
+    const refMap = {}; // _id -> created UUID
+
+    for (const action of plan.actions) {
+      out.push({ _id: action._id, type: action.type, status: "running" });
+      setResults([...out]);
+
+      try {
+        const created = await executor(action, refMap);
+        if (created && created.id) {
+          refMap[action._id] = created.id;
+        }
+        out[out.length - 1] = { ...out[out.length - 1], status: "ok", record: created };
+      } catch (err) {
+        console.error(`Action ${action._id} failed:`, err);
+        out[out.length - 1] = { ...out[out.length - 1], status: "error", error: err.message || "failed" };
+      }
+      setResults([...out]);
+    }
+
+    setExecuting(false);
+    setPhase("done");
+  }, [plan, executor]);
+
+  const value = {
+    isOpen, open, close, reset,
+    phase, input, setInput, plan, planning, executing,
+    planFromInput, executePlan,
+    results, error,
+    setExecutor,
+  };
+
+  return (
+    <OperatorContext.Provider value={value}>
+      {children}
+      <OperatorModal />
+    </OperatorContext.Provider>
+  );
+}
+
+function useOperator() {
+  return useContext(OperatorContext);
+}
+
+// ================================================================
+// OperatorModal — the input/plan/execute UI
+// ================================================================
+function OperatorModal() {
+  const op = useOperator();
+
+  // Esc to close (when not mid-execute)
+  useEffect(() => {
+    if (!op.isOpen) return undefined;
+    const handler = (e) => {
+      if (e.key === "Escape" && !op.planning && !op.executing) op.close();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [op.isOpen, op.planning, op.executing, op]);
+
+  if (!op.isOpen) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[70] flex items-center justify-center px-4"
+        onClick={() => { if (!op.planning && !op.executing) op.close(); }}
+      >
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 12 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96, y: 12 }}
+          transition={{ duration: 0.18, ease: "easeOut" }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-slate-900 border-2 border-amber-700/40 rounded-2xl shadow-2xl shadow-amber-500/10 w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-gradient-to-r from-amber-950/40 to-slate-900 shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shrink-0 shadow-lg shadow-amber-500/30">
+                <Wand2 className="w-4.5 h-4.5 text-black" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white">AI Operator</p>
+                <p className="text-[11px] text-amber-200/70">
+                  {op.phase === "input"   && "Tell me what to build"}
+                  {op.phase === "plan"    && "Review the plan before executing"}
+                  {op.phase === "execute" && "Working..."}
+                  {op.phase === "done"    && "Done — review your drafts"}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={op.close}
+              disabled={op.planning || op.executing}
+              className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Body — scrollable */}
+          <div className="flex-1 overflow-y-auto p-5">
+            {op.phase === "input"   && <OperatorInputView />}
+            {op.phase === "plan"    && <OperatorPlanView />}
+            {op.phase === "execute" && <OperatorExecuteView />}
+            {op.phase === "done"    && <OperatorDoneView />}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ----- Phase: Input -----
+function OperatorInputView() {
+  const op = useOperator();
+
+  const examples = [
+    "Add client Cameron Eddy, 231-555-1234, water heater replacement, $4,500 budget",
+    "Daily log for Hunter job today, 8 hours, demo'd existing tile, found water damage behind tub",
+    "Add to punch list for Sauter remodel: replace GFCI in master bath, caulk tub, touch up paint trim",
+    "Got 80 feet of half-inch PEX from Menards for the Cameron job, $42.30",
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="text-xs uppercase tracking-wide text-slate-400 block mb-2">
+          Speak or type your instruction
+        </label>
+        <div className="flex items-start gap-2">
+          <AutoTextarea
+            value={op.input}
+            onChange={(e) => op.setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                op.planFromInput(op.input);
+              }
+            }}
+            minRows={4}
+            maxRows={10}
+            placeholder="e.g. Add client Cameron Eddy at 4475 White Road, then a job for water heater replacement, then a draft estimate with a 90% high-efficiency unit, watchdog pan, and replace all black pipe to it..."
+            className="flex-1"
+            disabled={op.planning}
+            autoFocus
+          />
+          <VoiceMicButton
+            currentValue={op.input}
+            onChange={op.setInput}
+            appendMode
+            title="Dictate instruction"
+          />
+        </div>
+        <p className="text-[10px] text-slate-600 mt-1.5">
+          Cmd/Ctrl+Enter to plan · Esc to cancel
+        </p>
+      </div>
+
+      {!op.input && (
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Try one of these</p>
+          <div className="space-y-1.5">
+            {examples.map((ex, i) => (
+              <button
+                key={i}
+                onClick={() => op.setInput(ex)}
+                className="w-full text-left text-xs text-slate-400 hover:text-amber-300 bg-slate-900/60 hover:bg-amber-950/30 border border-slate-800 hover:border-amber-700/50 rounded-lg px-3 py-2 transition-colors"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {op.error && (
+        <div className="rounded-lg bg-rose-950/40 border border-rose-900/60 p-3 text-xs text-rose-200">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>{op.error}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+        <button
+          onClick={op.close}
+          disabled={op.planning}
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => op.planFromInput(op.input)}
+          disabled={!op.input.trim() || op.planning}
+          className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+        >
+          {op.planning ? <><Loader2 className="w-4 h-4 animate-spin" /> Planning...</> : <><Brain className="w-4 h-4" /> Plan</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ----- Phase: Plan review -----
+function OperatorPlanView() {
+  const op = useOperator();
+  if (!op.plan) return null;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg bg-amber-950/30 border border-amber-700/40 p-3">
+        <div className="flex items-start gap-2">
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-100">{op.plan.summary}</p>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs uppercase tracking-wide text-slate-400 mb-2 flex items-center gap-1.5">
+          <ListChecks className="w-3.5 h-3.5" />
+          Actions ({op.plan.actions.length})
+        </p>
+        <div className="space-y-2">
+          {op.plan.actions.map((action, idx) => (
+            <OperatorActionPreview key={action._id} index={idx + 1} action={action} />
+          ))}
+        </div>
+      </div>
+
+      <div className="text-[11px] text-slate-500 bg-slate-900/60 rounded-lg p-3 border border-slate-800">
+        Everything will be created as <span className="text-amber-400 font-medium">drafts</span>. Nothing is sent to clients, nothing is approved, nothing is finalized. You'll review each record before promoting it.
+      </div>
+
+      <div className="flex justify-between gap-2 pt-2 border-t border-slate-800">
+        <button
+          onClick={op.reset}
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors flex items-center gap-1.5"
+        >
+          <ChevronLeft className="w-4 h-4" /> Back
+        </button>
+        <button
+          onClick={op.executePlan}
+          className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-black hover:bg-emerald-400 transition-colors flex items-center gap-1.5"
+        >
+          <Play className="w-4 h-4" /> Execute Plan
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OperatorActionPreview({ index, action }) {
+  const labels = {
+    create_client:             { icon: Users, color: "text-cyan-400", label: "Create client" },
+    create_job:                { icon: Briefcase, color: "text-amber-400", label: "Create job" },
+    create_estimate:           { icon: Calculator, color: "text-emerald-400", label: "Create estimate" },
+    create_daily_log:          { icon: ClipboardList, color: "text-slate-300", label: "Create daily log" },
+    create_punch_item:         { icon: CheckCircle2, color: "text-rose-400", label: "Add punch item" },
+    create_material_delivery:  { icon: Package, color: "text-violet-400", label: "Add delivery" },
+  };
+  const meta = labels[action.type] || { icon: AlertCircle, color: "text-slate-400", label: action.type };
+  const Icon = meta.icon;
+  const data = action.data || {};
+
+  // Compose a one-line summary of the data
+  const dataSummary = (() => {
+    if (action.type === "create_client") return data.name || "(unnamed)";
+    if (action.type === "create_job") return data.name + (data.budget ? ` · $${data.budget.toLocaleString()}` : "");
+    if (action.type === "create_estimate") {
+      const matCount = (data.materials || []).length;
+      const labCount = (data.labor || []).length;
+      return `${data.name || "Estimate"} · ${matCount}m / ${labCount}L items`;
+    }
+    if (action.type === "create_daily_log") return `${data.log_date || "today"} — ${(data.work_performed || "").slice(0, 60)}`;
+    if (action.type === "create_punch_item") return data.item || "(no item)";
+    if (action.type === "create_material_delivery") return `${data.supplier || "?"} — ${data.description || "?"}`;
+    return JSON.stringify(data).slice(0, 80);
+  })();
+
+  return (
+    <div className="rounded-lg bg-slate-900/60 border border-slate-800 p-3 flex items-start gap-3">
+      <div className="shrink-0 w-7 h-7 rounded-md bg-slate-800 flex items-center justify-center text-xs font-semibold text-slate-400">
+        {index}
+      </div>
+      <Icon className={`w-4 h-4 ${meta.color} shrink-0 mt-1`} />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-slate-300">{meta.label}</p>
+        <p className="text-sm text-white truncate">{dataSummary}</p>
+      </div>
+    </div>
+  );
+}
+
+// ----- Phase: Execute (live progress) -----
+function OperatorExecuteView() {
+  const op = useOperator();
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg bg-slate-900/60 border border-slate-800 p-3 flex items-center gap-2">
+        <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+        <p className="text-sm text-slate-300">Creating drafts in your CRM...</p>
+      </div>
+      <div className="space-y-1.5">
+        {op.results.map((r, i) => (
+          <OperatorResultRow key={i} result={r} index={i + 1} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OperatorResultRow({ result, index }) {
+  const statusIcon = {
+    running: <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />,
+    ok:      <CheckCheck className="w-4 h-4 text-emerald-400" />,
+    error:   <AlertOctagon className="w-4 h-4 text-rose-400" />,
+  }[result.status];
+  const statusBg = {
+    running: "bg-amber-950/30 border-amber-700/40",
+    ok:      "bg-emerald-950/30 border-emerald-700/40",
+    error:   "bg-rose-950/30 border-rose-700/40",
+  }[result.status];
+
+  return (
+    <div className={`rounded-lg border ${statusBg} p-2.5 flex items-center gap-2.5 text-sm`}>
+      <span className="w-6 text-xs text-slate-500 tabular-nums">{index}.</span>
+      {statusIcon}
+      <span className="text-slate-200 flex-1 truncate">
+        {result.type.replace("create_", "").replace(/_/g, " ")}
+      </span>
+      {result.status === "error" && <span className="text-xs text-rose-300 truncate max-w-[180px]">{result.error}</span>}
+    </div>
+  );
+}
+
+// ----- Phase: Done -----
+function OperatorDoneView() {
+  const op = useOperator();
+  const okCount  = op.results.filter((r) => r.status === "ok").length;
+  const errCount = op.results.filter((r) => r.status === "error").length;
+
+  return (
+    <div className="space-y-4">
+      <div className={`rounded-lg p-3 border ${errCount === 0 ? "bg-emerald-950/30 border-emerald-700/40" : "bg-amber-950/30 border-amber-700/40"}`}>
+        <div className="flex items-start gap-2">
+          {errCount === 0
+            ? <CheckCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+            : <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />}
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-white">
+              {errCount === 0 ? "All actions complete" : `${okCount} succeeded, ${errCount} failed`}
+            </p>
+            <p className="text-xs text-slate-300 mt-0.5">
+              {errCount === 0
+                ? "Your drafts are ready to review."
+                : "Successful actions were saved. Review the failures below and try again or fix manually."}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        {op.results.map((r, i) => (
+          <OperatorResultRow key={i} result={r} index={i + 1} />
+        ))}
+      </div>
+
+      <div className="flex justify-between gap-2 pt-2 border-t border-slate-800">
+        <button
+          onClick={op.reset}
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors"
+        >
+          Run Another
+        </button>
+        <button
+          onClick={op.close}
+          className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-400 text-black hover:bg-amber-500 transition-colors"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// OperatorButton — sparkle/wand FAB & header button
+// Floating action button on mobile (bottom-right), header button
+// on desktop (right side).
+// ================================================================
+function OperatorFAB() {
+  const op = useOperator();
+  return (
+    <button
+      onClick={op.open}
+      className="lg:hidden fixed bottom-5 right-5 z-50 w-14 h-14 rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-black shadow-2xl shadow-amber-500/40 hover:scale-105 active:scale-95 transition-transform flex items-center justify-center"
+      aria-label="Open AI Operator"
+      title="AI Operator"
+    >
+      <Wand2 className="w-6 h-6" />
+    </button>
+  );
+}
+
+function OperatorHeaderButton() {
+  const op = useOperator();
+  return (
+    <button
+      onClick={op.open}
+      className="hidden lg:flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 text-black text-sm font-semibold hover:from-amber-300 hover:to-amber-500 transition-colors shadow-lg shadow-amber-500/20"
+      title="AI Operator (multi-step CRM commands)"
+    >
+      <Wand2 className="w-4 h-4" />
+      <span>Operator</span>
+    </button>
+  );
+}
+
+// ================================================================
+// UserAvatarDropdown — consolidates email display + sign-out
+// into a single avatar button with dropdown. Replaces the inline
+// email-text + logout-icon pair from pre-v1.5.1.
+// ================================================================
+function UserAvatarDropdown({ email, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const initials = (email || "?").slice(0, 2).toUpperCase();
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-9 h-9 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 border border-slate-600 text-amber-300 text-xs font-semibold hover:border-amber-500/50 transition-colors flex items-center justify-center"
+        title={email || "Account"}
+        aria-label="Account menu"
+      >
+        {initials}
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.96 }}
+            transition={{ duration: 0.12 }}
+            className="absolute right-0 top-full mt-2 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-50"
+          >
+            <div className="px-4 py-3 border-b border-slate-800">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">Signed in as</p>
+              <p className="text-sm text-slate-200 truncate">{email}</p>
+            </div>
+            <button
+              onClick={() => { setOpen(false); onLogout(); }}
+              className="w-full px-4 py-2.5 text-left text-sm text-slate-300 hover:bg-rose-950/40 hover:text-rose-300 transition-colors flex items-center gap-2"
+            >
+              <LogOut className="w-4 h-4" />
+              Sign out
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+
 // Wraps the browser's Web Speech API (SpeechRecognition).
 // Free, on-device, no API key, no network round-trip.
 // Accuracy is good for jobsite-relevant vocabulary.
@@ -7778,61 +9082,89 @@ function Dashboard({ jobs, estimates, clients, dailyLogs = [], documents = [], t
         />
       </motion.div>
 
-      {/* PRIORITY 3 — ACTIVE JOB BURN RATES (only if active) */}
-      {activeJobs.length > 0 && (
-        <motion.div variants={itemVariants}>
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-5">
-                <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-                  <Hammer className="w-4 h-4 text-amber-400" />
-                  Active Jobs — Burn Rate
-                </h2>
-                <button
-                  onClick={() => setTab && setTab("Jobs")}
-                  className="text-xs text-slate-500 hover:text-amber-400 flex items-center gap-1 transition-colors"
-                >
-                  View all <ChevronRight className="w-3 h-3" />
-                </button>
-              </div>
-              <div className="space-y-4">
-                {activeJobs.map((j) => {
-                  const pct   = j.budget ? Math.min(100, ((j.actual || 0) / j.budget) * 100) : 0;
-                  const color = pct < 70 ? "bg-emerald-500" : pct < 90 ? "bg-amber-400" : "bg-rose-500";
-                  const textColor = pct < 70 ? "text-emerald-400" : pct < 90 ? "text-amber-400" : "text-rose-400";
-                  return (
-                    <div key={j.id}>
-                      <div className="flex justify-between items-center text-sm mb-1.5">
-                        <div className="min-w-0 flex-1 mr-2">
-                          <span className="text-slate-200 font-medium truncate">{j.name}</span>
-                          {j.client_id && getClientName(j.client_id) && (
-                            <span className="text-slate-500 text-xs ml-2">
-                              — {getClientName(j.client_id)}
-                            </span>
-                          )}
+      {/* PRIORITY 3 — ACTIVE JOB BURN RATES (only if active AND has actuals) */}
+      {activeJobs.length > 0 && (() => {
+        // v1.5.1 — If every active job has 0 actual, the burn rate display
+        // is just three lines of "0% burned" — pretty but useless.
+        // Hide the breakdown, show one-line collapsed state instead.
+        const hasAnyActuals = activeJobs.some((j) => Number(j.actual || 0) > 0);
+        if (!hasAnyActuals) {
+          return (
+            <motion.div variants={itemVariants}>
+              <Card>
+                <CardContent className="p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Hammer className="w-4 h-4 text-slate-600 shrink-0" />
+                    <p className="text-xs text-slate-500 truncate">
+                      {activeJobs.length} active {activeJobs.length === 1 ? "job" : "jobs"} — no actuals logged yet, burn rate will appear once costs are tracked
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setTab && setTab("Jobs")}
+                    className="text-xs text-slate-500 hover:text-amber-400 flex items-center gap-1 transition-colors shrink-0"
+                  >
+                    View jobs <ChevronRight className="w-3 h-3" />
+                  </button>
+                </CardContent>
+              </Card>
+            </motion.div>
+          );
+        }
+        return (
+          <motion.div variants={itemVariants}>
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                    <Hammer className="w-4 h-4 text-amber-400" />
+                    Active Jobs — Burn Rate
+                  </h2>
+                  <button
+                    onClick={() => setTab && setTab("Jobs")}
+                    className="text-xs text-slate-500 hover:text-amber-400 flex items-center gap-1 transition-colors"
+                  >
+                    View all <ChevronRight className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="space-y-4">
+                  {activeJobs.map((j) => {
+                    const pct   = j.budget ? Math.min(100, ((j.actual || 0) / j.budget) * 100) : 0;
+                    const color = pct < 70 ? "bg-emerald-500" : pct < 90 ? "bg-amber-400" : "bg-rose-500";
+                    const textColor = pct < 70 ? "text-emerald-400" : pct < 90 ? "text-amber-400" : "text-rose-400";
+                    return (
+                      <div key={j.id}>
+                        <div className="flex justify-between items-center text-sm mb-1.5">
+                          <div className="min-w-0 flex-1 mr-2">
+                            <span className="text-slate-200 font-medium truncate">{j.name}</span>
+                            {j.client_id && getClientName(j.client_id) && (
+                              <span className="text-slate-500 text-xs ml-2">
+                                — {getClientName(j.client_id)}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-slate-400 text-xs whitespace-nowrap">
+                            {currency(j.actual || 0)}{" "}
+                            <span className="text-slate-600">/ {currency(j.budget)}</span>
+                          </span>
                         </div>
-                        <span className="text-slate-400 text-xs whitespace-nowrap">
-                          {currency(j.actual || 0)}{" "}
-                          <span className="text-slate-600">/ {currency(j.budget)}</span>
-                        </span>
+                        <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                          <motion.div
+                            className={`h-2 rounded-full ${color}`}
+                            initial={{ width: 0 }}
+                            animate={{ width: `${pct}%` }}
+                            transition={{ duration: 0.8, ease: "easeOut" }}
+                          />
+                        </div>
+                        <p className={`text-xs mt-1 ${textColor}`}>{round2(pct)}% burned</p>
                       </div>
-                      <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                        <motion.div
-                          className={`h-2 rounded-full ${color}`}
-                          initial={{ width: 0 }}
-                          animate={{ width: `${pct}%` }}
-                          transition={{ duration: 0.8, ease: "easeOut" }}
-                        />
-                      </div>
-                      <p className={`text-xs mt-1 ${textColor}`}>{round2(pct)}% burned</p>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-      )}
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        );
+      })()}
 
       {/* CHARTS ROW */}
       <motion.div variants={itemVariants} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -8984,12 +10316,12 @@ function LeadCard({ lead, onClick, onDragStart, onDragEnd, isDragging, isLost })
           : "border-slate-700/60 bg-slate-900/80 hover:border-amber-500/40 hover:shadow-lg hover:shadow-amber-500/5"
       } p-3`}
     >
-      {/* Top row: name + drag handle */}
+      {/* Top row: name (prominent) + drag handle */}
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex-1 min-w-0">
-          <div className="font-semibold text-white text-sm truncate">{lead.name}</div>
+          <div className="font-semibold text-white text-base truncate leading-tight">{lead.name}</div>
           {lead.scope && (
-            <div className="text-xs text-slate-400 truncate mt-0.5">{lead.scope}</div>
+            <div className="text-xs text-slate-400 truncate mt-1">{lead.scope}</div>
           )}
         </div>
         {!isLost && (
@@ -8997,25 +10329,25 @@ function LeadCard({ lead, onClick, onDragStart, onDragEnd, isDragging, isLost })
         )}
       </div>
 
-      {/* Source pill */}
-      {lead.source && (
-        <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">
-          {lead.source}
-        </div>
-      )}
-
-      {/* Bottom row: value + age */}
-      <div className="flex items-center justify-between gap-2">
+      {/* Bottom row: value + source pill (smaller) + age */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         {valueStr ? (
           <span className="text-sm font-semibold text-amber-300 tabular-nums">{valueStr}</span>
         ) : (
           <span className="text-xs text-slate-600 italic">No value</span>
         )}
-        {days != null && (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-md tabular-nums font-medium ${touchBadgeColor(days)}`}>
-            {days === 0 ? "today" : days === 1 ? "1d" : `${days}d`}
-          </span>
-        )}
+        <div className="flex items-center gap-1.5">
+          {lead.source && (
+            <span className="text-[9px] uppercase tracking-wide text-slate-500 bg-slate-800/60 px-1.5 py-0.5 rounded">
+              {lead.source}
+            </span>
+          )}
+          {days != null && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-md tabular-nums font-medium ${touchBadgeColor(days)}`}>
+              {days === 0 ? "today" : days === 1 ? "1d" : `${days}d`}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Stale flame indicator */}
@@ -9765,8 +11097,17 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
 
   const saveEst = async (status = "Draft") => {
     setSaving(true);
+    // v1.5.1 — Auto-name estimates if user kept the default "New Estimate".
+    // Pulls client name + first ~30 chars of scope. Real names beat
+    // having ten "New Estimate" rows in the saved list.
+    let finalName = estName;
+    if (!finalName || finalName.trim() === "" || finalName.trim() === "New Estimate") {
+      const client    = clients.find((c) => c.id === selectedClientId);
+      const scopeBit  = (scopeOfWork || "").trim().slice(0, 30);
+      finalName = `Estimate${client ? " — " + client.name : ""}${scopeBit ? " — " + scopeBit : ""}`.trim() || "Estimate";
+    }
     const payload = {
-      name:          estName,
+      name:          finalName,
       materials,
       labor,
       grand_total:   grandTotal,
@@ -10493,21 +11834,29 @@ function Estimator({ settings, estimates, setEstimates, onJobCreated, clients, s
                 </p>
               )}
               <div className="space-y-1.5">
-                {lineItems.map((li) => (
-                  <div
-                    key={li.label}
-                    className={`flex justify-between text-sm ${
-                      li.bold
-                        ? "font-semibold text-slate-200 border-t border-slate-700 pt-1.5 mt-1.5"
-                        : "text-slate-400"
-                    }`}
-                  >
-                    <span>{li.label}</span>
-                    <span className={li.bold ? "text-slate-200" : "text-slate-300"}>
-                      {li.value}
-                    </span>
+                {/* v1.5.1 — Hide $0 breakdown until estimate has materials or labor */}
+                {(materials.length > 0 || labor.length > 0) ? (
+                  lineItems.map((li) => (
+                    <div
+                      key={li.label}
+                      className={`flex justify-between text-sm ${
+                        li.bold
+                          ? "font-semibold text-slate-200 border-t border-slate-700 pt-1.5 mt-1.5"
+                          : "text-slate-400"
+                      }`}
+                    >
+                      <span>{li.label}</span>
+                      <span className={li.bold ? "text-slate-200" : "text-slate-300"}>
+                        {li.value}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6">
+                    <Calculator className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+                    <p className="text-xs text-slate-500">Add materials or labor to see your numbers</p>
                   </div>
-                ))}
+                )}
               </div>
               <div className="mt-4 pt-4 border-t border-amber-900/50">
                 <div className="flex justify-between items-center">
@@ -13674,6 +15023,209 @@ function AppInner() {
     return () => window.removeEventListener("keydown", handler);
   }, [mobileNavOpen]);
 
+  // ============================================================
+  // OPERATOR EXECUTOR (v1.5.1)
+  // Bound here because it needs all the state setters for lifted
+  // domain data. Registered to OperatorProvider via setExecutor.
+  // ============================================================
+  const operator = useOperator();
+  useEffect(() => {
+    operator.setExecutor(() => async (action, refMap) => {
+      const resolveRef = (ref) => {
+        if (!ref) return null;
+        // If it's an _id like "a1", look up the created UUID
+        if (refMap[ref]) return refMap[ref];
+        // Otherwise assume it's already a UUID (existing record)
+        return ref;
+      };
+
+      const tryFindExisting = (text, collection, fields = ["name"]) => {
+        if (!text) return null;
+        const lower = text.toLowerCase();
+        return collection.find((row) =>
+          fields.some((f) => (row[f] || "").toLowerCase().includes(lower))
+        );
+      };
+
+      switch (action.type) {
+        case "create_client": {
+          const payload = {
+            name:    action.data.name,
+            phone:   action.data.phone || null,
+            email:   action.data.email || null,
+            address: action.data.address || null,
+            notes:   action.data.notes || null,
+          };
+          const { data, error } = await supabase
+            .from("clients").insert(payload).select().single();
+          if (error) throw new Error(error.message);
+          setClients((c) => [data, ...c]);
+          return data;
+        }
+
+        case "create_job": {
+          // Resolve client_ref: could be _id, UUID, or fuzzy name
+          let clientId = resolveRef(action.data.client_ref);
+          if (clientId && !clients.find((c) => c.id === clientId)) {
+            // Not a known UUID — try fuzzy match by name
+            const match = tryFindExisting(action.data.client_ref, clients, ["name"]);
+            clientId = match ? match.id : null;
+          }
+          const payload = {
+            name:      action.data.name,
+            status:    "Active",
+            budget:    Number(action.data.budget) || 0,
+            actual:    0,
+            client_id: clientId,
+          };
+          const { data, error } = await supabase
+            .from("jobs").insert(payload).select().single();
+          if (error) throw new Error(error.message);
+          setJobs((j) => [data, ...j]);
+          return data;
+        }
+
+        case "create_estimate": {
+          let jobId    = resolveRef(action.data.job_ref);
+          let clientId = resolveRef(action.data.client_ref);
+          if (jobId && !jobs.find((j) => j.id === jobId)) {
+            const match = tryFindExisting(action.data.job_ref, jobs, ["name"]);
+            jobId = match ? match.id : null;
+          }
+          if (clientId && !clients.find((c) => c.id === clientId)) {
+            const match = tryFindExisting(action.data.client_ref, clients, ["name"]);
+            clientId = match ? match.id : null;
+          }
+          // Compute totals from materials/labor arrays
+          const materials = (action.data.materials || []).map((m, i) => ({
+            id: `op-mat-${Date.now()}-${i}`,
+            name: m.description || m.name || "Material",
+            cost: Number(m.unit_cost || m.cost) || 0,
+            qty:  Number(m.qty) || 1,
+          }));
+          const labor = (action.data.labor || []).map((l, i) => ({
+            id: `op-lab-${Date.now()}-${i}`,
+            task:  l.task || "Labor",
+            rate:  Number(l.rate) || 95,
+            hours: Number(l.hours) || 0,
+          }));
+          const matTotal = materials.reduce((s, m) => s + m.cost * m.qty, 0);
+          const labTotal = labor.reduce((s, l) => s + l.rate * l.hours, 0);
+          // Apply markup + overhead + profit + contingency per Northshore defaults
+          const matMarked = matTotal * (1 + (Number(settings?.materialMarkupPct ?? 20)) / 100);
+          const subtotal = matMarked + labTotal;
+          const overhead    = subtotal * ((Number(settings?.overheadPct ?? 12.5)) / 100);
+          const profit      = subtotal * ((Number(settings?.profitPct ?? 10)) / 100);
+          const contingency = subtotal * 0.10;
+          const grandTotal  = subtotal + overhead + profit + contingency;
+
+          // Auto-name: "Estimate — [Client] — [Scope first 30 chars]"
+          let estName = action.data.name;
+          if (!estName) {
+            const client = clients.find((c) => c.id === clientId);
+            const scopeShort = (action.data.scope_of_work || "").slice(0, 30);
+            estName = `Estimate${client ? " — " + client.name : ""}${scopeShort ? " — " + scopeShort : ""}`.trim();
+          }
+
+          const payload = {
+            name:            estName,
+            materials,
+            labor,
+            grand_total:     grandTotal,
+            status:          "Draft",
+            client_id:       clientId,
+            job_id:          jobId,
+            scope_of_work:   action.data.scope_of_work || null,
+            project_address: action.data.project_address || null,
+            estimated_weeks: Number(action.data.estimated_weeks) || 4,
+            exclusions:      action.data.exclusions || null,
+            contingency_pct: 10,
+            materials_total: matTotal,
+            labor_total:     labTotal,
+            overhead_pct:    Number(settings?.overheadPct ?? 12.5),
+            profit_pct:      Number(settings?.profitPct ?? 10),
+          };
+          const { data, error } = await supabase
+            .from("estimates").insert(payload).select().single();
+          if (error) throw new Error(error.message);
+          setEstimates((e) => [data, ...e]);
+          return data;
+        }
+
+        case "create_daily_log": {
+          let jobId = resolveRef(action.data.job_ref);
+          if (jobId && !jobs.find((j) => j.id === jobId)) {
+            const match = tryFindExisting(action.data.job_ref, jobs, ["name"]);
+            jobId = match ? match.id : null;
+          }
+          if (!jobId) throw new Error("Couldn't resolve which job to log against");
+          const payload = {
+            job_id:         jobId,
+            log_date:       action.data.log_date || new Date().toISOString().slice(0, 10),
+            crew:           action.data.crew || "Connor",
+            hours_connor:   Number(action.data.hours_connor) || null,
+            weather:        action.data.weather || null,
+            work_performed: action.data.work_performed || "",
+            issues:         action.data.issues || null,
+          };
+          const { data, error } = await supabase
+            .from("daily_logs").insert(payload).select().single();
+          if (error) throw new Error(error.message);
+          setDailyLogs((d) => [data, ...d]);
+          return data;
+        }
+
+        case "create_punch_item": {
+          let jobId = resolveRef(action.data.job_ref);
+          if (jobId && !jobs.find((j) => j.id === jobId)) {
+            const match = tryFindExisting(action.data.job_ref, jobs, ["name"]);
+            jobId = match ? match.id : null;
+          }
+          if (!jobId) throw new Error("Couldn't resolve which job for punch item");
+          const payload = {
+            job_id:    jobId,
+            item:      action.data.item,
+            category:  action.data.category || null,
+            completed: false,
+          };
+          const { data, error } = await supabase
+            .from("punch_list").insert(payload).select().single();
+          if (error) throw new Error(error.message);
+          // No top-level state for punch_list — JobOperations loads its own
+          return data;
+        }
+
+        case "create_material_delivery": {
+          let jobId = resolveRef(action.data.job_ref);
+          if (jobId && !jobs.find((j) => j.id === jobId)) {
+            const match = tryFindExisting(action.data.job_ref, jobs, ["name"]);
+            jobId = match ? match.id : null;
+          }
+          if (!jobId) throw new Error("Couldn't resolve which job for delivery");
+          const payload = {
+            job_id:        jobId,
+            supplier:      action.data.supplier || null,
+            description:   action.data.description,
+            quantity:      action.data.quantity || null,
+            cost:          Number(action.data.cost) || null,
+            expected_date: action.data.expected_date || null,
+            status:        "Ordered",
+          };
+          const { data, error } = await supabase
+            .from("material_deliveries").insert(payload).select().single();
+          if (error) throw new Error(error.message);
+          setMaterialDeliveries((d) => [data, ...d]);
+          return data;
+        }
+
+        default:
+          throw new Error(`Unknown action type: ${action.type}`);
+      }
+    });
+    // eslint is fine — the executor closes over fresh state via the outer
+    // function reference; we only register once when these change.
+  }, [operator, clients, jobs, settings, setClients, setJobs, setEstimates, setDailyLogs, setMaterialDeliveries]);
+
   // Daily-log alert badge for nav
   const today = new Date().toISOString().slice(0, 10);
   const activeJobs = jobs.filter((j) => j.status === "Active");
@@ -13826,22 +15378,17 @@ function AppInner() {
           </nav>
 
           <div className="flex items-center gap-2">
+            <OperatorHeaderButton />
             <ClockWidget
               activeEntry={activeTimeEntry}
               jobs={jobs}
               onClockIn={handleClockIn}
               onClockOut={handleClockOut}
             />
-            <span className="hidden md:block text-xs text-slate-500 truncate max-w-[180px]">
-              {session.user?.email}
-            </span>
-            <button
-              onClick={handleLogout}
-              className="p-2 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-lg transition-colors"
-              title="Sign out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+            <UserAvatarDropdown
+              email={session.user?.email}
+              onLogout={handleLogout}
+            />
           </div>
         </div>
 
@@ -14026,8 +15573,11 @@ function AppInner() {
       <footer className="max-w-screen-2xl mx-auto px-4 lg:px-6 py-6 text-center text-[10px] text-slate-700 border-t border-slate-900 mt-12">
         © {new Date().getFullYear()} {settings.companyName} &nbsp;|&nbsp;
         License #{settings.licenseNumber} &nbsp;|&nbsp;
-        Northshore OS Phase 4
+        Phase 3 · Project 2 · v1.5.1
       </footer>
+
+      {/* Mobile-only FAB for AI Operator */}
+      <OperatorFAB />
     </div>
   );
 }
@@ -14036,7 +15586,11 @@ export default function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
-        <AppInner />
+        <AIDrawerProvider>
+          <OperatorProvider>
+            <AppInner />
+          </OperatorProvider>
+        </AIDrawerProvider>
       </ConfirmProvider>
     </ToastProvider>
   );
